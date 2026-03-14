@@ -11,9 +11,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
@@ -65,12 +67,22 @@ import kotlin.math.roundToInt
 
 @Composable
 fun Home(
+    initialUri: Uri? = null,
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val version = remember { FFmpegNative.getFFmpegVersion() }
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+
+    // Add initial video if provided
+    LaunchedEffect(initialUri) {
+        initialUri?.let {
+            if (uiState.clips.none { clip -> clip.uri == it }) {
+                viewModel.addVideo(it, context)
+            }
+        }
+    }
 
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -101,7 +113,7 @@ fun Home(
                     .build()
             }
         }
-        
+
         if (mediaItems.isNotEmpty()) {
             val currentPos = exoPlayer.currentPosition
             val currentIndex = exoPlayer.currentMediaItemIndex
@@ -159,7 +171,7 @@ fun Home(
         onMoveClip = { from, to -> viewModel.moveClip(from, to) },
         onSeek = { position ->
             viewModel.updateProgress(position)
-            
+
             var accumulatedMs = 0L
             var targetIndex = 0
             var targetPosition = 0L
@@ -172,7 +184,7 @@ fun Home(
                 }
                 accumulatedMs += clipDur
             }
-            
+
             if (exoPlayer.mediaItemCount > targetIndex) {
                 exoPlayer.seekTo(targetIndex, targetPosition.coerceAtLeast(0))
             }
@@ -209,13 +221,13 @@ fun EditorScreenContent(
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { EditorTopBar() },
-        bottomBar = { 
+        topBar = { EditorTopBar(onAddVideoClick = onAddVideoClick) },
+        bottomBar = {
             EditorBottomBar(
                 isClipSelected = uiState.selectedClipId != null,
                 onSplitClick = onSplitClick,
                 onDeleteClick = onDeleteClick
-            ) 
+            )
         },
         containerColor = Color.Black
     ) { innerPadding ->
@@ -335,7 +347,7 @@ fun EditorIconButton(
 }
 
 @Composable
-fun EditorTopBar() {
+fun EditorTopBar(onAddVideoClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -349,6 +361,9 @@ fun EditorTopBar() {
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onAddVideoClick, modifier = Modifier.padding(end = 8.dp)) {
+                Icon(Icons.Default.Add, contentDescription = "Add Video", tint = Color.White)
+            }
             Surface(
                 color = Color(0xFF333333),
                 shape = RoundedCornerShape(4.dp),
@@ -445,7 +460,6 @@ fun EditorTimeline(
     var dragOffset by remember { mutableFloatStateOf(0f) }
 
     // Animated Zoom Out Effect when dragging - Significantly wider view
-    // Using a target value around 150 ms/dp to make clips look smaller (around 60dp for a 6s clip)
     val displayMsPerDp by animateFloatAsState(
         targetValue = if (draggedIndex != null) 150f else uiState.msPerDp,
         animationSpec = tween(durationMillis = 300),
@@ -505,131 +519,140 @@ fun EditorTimeline(
     ) {
         TimelineHeader(uiState.currentTime, uiState.currentPositionMs, displayMsPerDp)
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            // Playhead Line
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(2.dp)
-                    .background(Color.White)
-                    .align(Alignment.Center)
-                    .zIndex(10f)
-            )
-
-            LazyRow(
-                state = listState,
-                userScrollEnabled = draggedIndex == null && !isTrimming, // Disable scrolling timeline while dragging OR trimming
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = halfScreenWidth),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                itemsIndexed(uiState.clips, key = { _, clip -> clip.id }) { index, clip ->
-                    val isBeingDragged = draggedIndex == index
-                    
-                    VideoClipItem(
-                        clip = clip, 
-                        msPerDp = displayMsPerDp, 
-                        isSelected = uiState.selectedClipId == clip.id,
-                        onClick = { onClipSelected(clip.id) },
-                        onTrim = { startMs, endMs ->
-                            isTrimming = false
-                            onTrimClip(clip.id, startMs, endMs)
-                        },
-                        onDragStart = { isTrimming = true },
-                        onDragHandle = { previewTrimMs ->
-                            var timeMs = 0L
-                            for (c in uiState.clips) {
-                                if (c.id == clip.id) break
-                                timeMs += c.durationMs
-                            }
-                            val offsetFromStartOfClip = previewTrimMs - clip.trimStartMs
-                            onSeek(timeMs + offsetFromStartOfClip)
-                        },
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (uiState.clips.isEmpty()) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = onAddVideoClick,
                         modifier = Modifier
-                            .zIndex(if (isBeingDragged) 100f else 1f)
-                            .offset {
-                                if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0)
-                                else IntOffset.Zero
-                            }
-                            .scale(if (isBeingDragged) 0.85f else 1f)
-                            .alpha(if (draggedIndex != null && !isBeingDragged) 0.6f else 1f)
-                            .pointerInput(uiState.clips) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = { offset ->
-                                        draggedIndex = index
-                                        dragOffset = 0f
-                                    },
-                                    onDragEnd = {
-                                        val finalDragOffsetDp = with(density) { dragOffset.toDp() }.value
-                                        var targetIndex = index
-                                        var accumulatedOffset = 0f
-                                        
-                                        if (finalDragOffsetDp > 0) {
-                                            // Dragging right
-                                            for (i in index + 1 until uiState.clips.size) {
-                                                val nextClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
-                                                if (finalDragOffsetDp > accumulatedOffset + (nextClipWidth / 2)) {
-                                                    targetIndex = i
-                                                    accumulatedOffset += nextClipWidth
-                                                } else break
+                            .size(64.dp)
+                            .background(Color(0xFF222222), RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add Video", tint = Color.White, modifier = Modifier.size(32.dp))
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Add Video", color = Color.White, fontSize = 14.sp)
+                }
+            } else {
+                // Playhead Line
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(2.dp)
+                        .background(Color.White)
+                        .align(Alignment.Center)
+                        .zIndex(10f)
+                )
+
+                LazyRow(
+                    state = listState,
+                    userScrollEnabled = draggedIndex == null && !isTrimming,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = halfScreenWidth),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    itemsIndexed(uiState.clips, key = { _, clip -> clip.id }) { index, clip ->
+                        val isBeingDragged = draggedIndex == index
+
+                        VideoClipItem(
+                            clip = clip,
+                            msPerDp = displayMsPerDp,
+                            isSelected = uiState.selectedClipId == clip.id,
+                            onClick = { onClipSelected(clip.id) },
+                            onTrim = { startMs, endMs ->
+                                isTrimming = false
+                                onTrimClip(clip.id, startMs, endMs)
+                            },
+                            onDragStart = { isTrimming = true },
+                            onDragHandle = { previewTrimMs ->
+                                var timeMs = 0L
+                                for (c in uiState.clips) {
+                                    if (c.id == clip.id) break
+                                    timeMs += c.durationMs
+                                }
+                                val offsetFromStartOfClip = previewTrimMs - clip.trimStartMs
+                                onSeek(timeMs + offsetFromStartOfClip)
+                            },
+                            modifier = Modifier
+                                .zIndex(if (isBeingDragged) 100f else 1f)
+                                .offset {
+                                    if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0)
+                                    else IntOffset.Zero
+                                }
+                                .scale(if (isBeingDragged) 0.85f else 1f)
+                                .alpha(if (draggedIndex != null && !isBeingDragged) 0.6f else 1f)
+                                .pointerInput(uiState.clips) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { offset ->
+                                            draggedIndex = index
+                                            dragOffset = 0f
+                                        },
+                                        onDragEnd = {
+                                            val finalDragOffsetDp = with(density) { dragOffset.toDp() }.value
+                                            var targetIndex = index
+                                            var accumulatedOffset = 0f
+
+                                            if (finalDragOffsetDp > 0) {
+                                                for (i in index + 1 until uiState.clips.size) {
+                                                    val nextClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
+                                                    if (finalDragOffsetDp > accumulatedOffset + (nextClipWidth / 2)) {
+                                                        targetIndex = i
+                                                        accumulatedOffset += nextClipWidth
+                                                    } else break
+                                                }
+                                            } else if (finalDragOffsetDp < 0) {
+                                                var absOffset = -finalDragOffsetDp
+                                                for (i in index - 1 downTo 0) {
+                                                    val prevClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
+                                                    if (absOffset > accumulatedOffset + (prevClipWidth / 2)) {
+                                                        targetIndex = i
+                                                        accumulatedOffset += prevClipWidth
+                                                    } else break
+                                                }
                                             }
-                                        } else if (finalDragOffsetDp < 0) {
-                                            // Dragging left
-                                            var absOffset = -finalDragOffsetDp
-                                            for (i in index - 1 downTo 0) {
-                                                val prevClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
-                                                if (absOffset > accumulatedOffset + (prevClipWidth / 2)) {
-                                                    targetIndex = i
-                                                    accumulatedOffset += prevClipWidth
-                                                } else break
+
+                                            if (targetIndex != index) {
+                                                onMoveClip(index, targetIndex)
                                             }
+                                            draggedIndex = null
+                                            dragOffset = 0f
+                                        },
+                                        onDragCancel = {
+                                            draggedIndex = null
+                                            dragOffset = 0f
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragOffset += dragAmount.x
                                         }
-                                        
-                                        if (targetIndex != index) {
-                                            onMoveClip(index, targetIndex)
-                                        }
-                                        draggedIndex = null
-                                        dragOffset = 0f
-                                    },
-                                    onDragCancel = {
-                                        draggedIndex = null
-                                        dragOffset = 0f
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        dragOffset += dragAmount.x
-                                    }
-                                )
-                            }
-                    )
+                                    )
+                                }
+                        )
+                    }
                 }
 
-                item {
-                    AddClipButton(onAddVideoClick)
-                }
-            }
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-            ) {
-                FloatingActionButton(
-                    onClick = onZoomIn,
-                    containerColor = Color.DarkGray,
-                    contentColor = Color.White,
-                    modifier = Modifier.size(40.dp)
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Zoom In")
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                FloatingActionButton(
-                    onClick = onZoomOut,
-                    containerColor = Color.DarkGray,
-                    contentColor = Color.White,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Zoom Out")
+                    FloatingActionButton(
+                        onClick = onZoomIn,
+                        containerColor = Color.DarkGray,
+                        contentColor = Color.White,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Zoom In")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    FloatingActionButton(
+                        onClick = onZoomOut,
+                        containerColor = Color.DarkGray,
+                        contentColor = Color.White,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Zoom Out")
+                    }
                 }
             }
         }
@@ -713,9 +736,9 @@ private fun formatTimelineLabel(seconds: Int): String {
 
 @Composable
 fun VideoClipItem(
-    clip: VideoClip, 
-    msPerDp: Float, 
-    isSelected: Boolean, 
+    clip: VideoClip,
+    msPerDp: Float,
+    isSelected: Boolean,
     onClick: () -> Unit,
     onTrim: (Long, Long) -> Unit = { _, _ -> },
     onDragStart: () -> Unit = {},
@@ -723,112 +746,111 @@ fun VideoClipItem(
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    var tempTrimStartMs by remember(clip.id, clip.trimStartMs, isSelected) { mutableLongStateOf(clip.trimStartMs) }
-    var tempTrimEndMs by remember(clip.id, clip.trimEndMs, isSelected) { mutableLongStateOf(clip.trimEndMs) }
 
-    val effectiveDuration = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(0L)
-    val width = if (effectiveDuration > 0L) (effectiveDuration / msPerDp).toFloat().dp else 100.dp
-    
-    val originalWidth = if (clip.originalDurationMs > 0L) (clip.originalDurationMs / msPerDp).toFloat().dp else 100.dp
+    // REAL-TIME RIPPLE: State driven by local drag to ensure responsiveness
+    var tempTrimStartMs by remember(clip.id, clip.trimStartMs) { mutableLongStateOf(clip.trimStartMs) }
+    var tempTrimEndMs by remember(clip.id, clip.trimEndMs) { mutableLongStateOf(clip.trimEndMs) }
+
+    var initialTrimStart by remember { mutableLongStateOf(0L) }
+    var initialTrimEnd by remember { mutableLongStateOf(0L) }
+    var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
+
+    // Filmora-like Ripple: The layout width updates immediately as you drag
+    val effectiveDuration = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
+
+    // Width logic with placeholder for loading state
+    val baseWidthMs = if (effectiveDuration <= 100L && clip.originalDurationMs == 0L) 3000L else effectiveDuration
+    val layoutWidth = (baseWidthMs.toFloat() / msPerDp).dp
+
+    val originalWidthDp = (clip.originalDurationMs.coerceAtLeast(baseWidthMs) / msPerDp).dp
 
     Box(
         modifier = modifier
-            .width(width)
+            .width(layoutWidth) // Real-time width update causes ripple in LazyRow
             .height(64.dp)
             .padding(horizontal = 0.5.dp)
-            .background(clip.color, RoundedCornerShape(4.dp))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick
-            )
-            .clip(RoundedCornerShape(4.dp)),
-        contentAlignment = Alignment.CenterStart
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
     ) {
-        if (clip.thumbnails.isNotEmpty()) {
+        // Content window
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(clip.color, RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(4.dp))
+        ) {
             Row(
                 modifier = Modifier
-                    .width(originalWidth)
+                    .requiredWidth(originalWidthDp)
                     .fillMaxHeight()
-                    .offset(x = -(tempTrimStartMs / msPerDp).toFloat().dp)
+                    .offset(x = -(tempTrimStartMs / msPerDp).dp)
             ) {
-                clip.thumbnails.forEach { bitmap ->
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
-                        contentScale = ContentScale.Crop
-                    )
-                }
-            }
-        }
-        
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
-        
-        Text(
-            formatDurationLabel(effectiveDuration),
-            color = Color.White,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 18.dp).background(Color.Black.copy(0.4f), RoundedCornerShape(2.dp)).padding(horizontal = 4.dp)
-        )
-
-        if (isSelected) {
-            // Main white border
-            Box(modifier = Modifier.fillMaxSize().border(3.dp, Color.White, RoundedCornerShape(4.dp)))
-
-            // Left Handle
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .width(18.dp)
-                    .fillMaxHeight()
-                    .background(Color.White, RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp))
-                    .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { onDragStart() },
-                            onDragEnd = { onTrim(tempTrimStartMs, tempTrimEndMs) }
-                        ) { change, dragAmount ->
-                            change.consume()
-                            val dragDp = with(density) { dragAmount.toDp() }
-                            val dragMs = (dragDp.value * msPerDp).toLong()
-                            tempTrimStartMs = (tempTrimStartMs + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
-                            onDragHandle(tempTrimStartMs)
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Red))
-                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Gray))
+                if (clip.thumbnails.isEmpty()) {
+                    repeat(5) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) }
+                } else {
+                    clip.thumbnails.forEach { bitmap ->
+                        Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop)
+                    }
                 }
             }
 
-            // Right Handle
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .width(18.dp)
-                    .fillMaxHeight()
-                    .background(Color.White, RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp))
-                    .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { onDragStart() },
-                            onDragEnd = { onTrim(tempTrimStartMs, tempTrimEndMs) }
-                        ) { change, dragAmount ->
-                            change.consume()
-                            val dragDp = with(density) { dragAmount.toDp() }
-                            val dragMs = (dragDp.value * msPerDp).toLong()
-                            tempTrimEndMs = (tempTrimEndMs + dragMs).coerceIn(tempTrimStartMs + 200L, clip.originalDurationMs)
-                            onDragHandle(tempTrimEndMs)
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Red))
-                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Gray))
-                }
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
+
+            if (isSelected) {
+                Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
+
+                // Left Handle
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(24.dp)
+                        .fillMaxHeight()
+                        .background(Color.White)
+                        .draggable(
+                            orientation = Orientation.Horizontal,
+                            state = rememberDraggableState { delta ->
+                                dragAccumulatorPx += delta
+                                val dragMs = (dragAccumulatorPx / density.density * msPerDp).toLong()
+                                tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
+                                onDragHandle(tempTrimStartMs)
+                            },
+                            onDragStarted = {
+                                initialTrimStart = tempTrimStartMs
+                                dragAccumulatorPx = 0f
+                                onDragStart()
+                            },
+                            onDragStopped = {
+                                onTrim(tempTrimStartMs, tempTrimEndMs)
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) { Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
+
+                // Right Handle
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(24.dp)
+                        .fillMaxHeight()
+                        .background(Color.White)
+                        .draggable(
+                            orientation = Orientation.Horizontal,
+                            state = rememberDraggableState { delta ->
+                                dragAccumulatorPx += delta
+                                val dragMs = (dragAccumulatorPx / density.density * msPerDp).toLong()
+                                tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, clip.originalDurationMs)
+                                onDragHandle(tempTrimEndMs)
+                            },
+                            onDragStarted = {
+                                initialTrimEnd = tempTrimEndMs
+                                dragAccumulatorPx = 0f
+                                onDragStart()
+                            },
+                            onDragStopped = {
+                                onTrim(tempTrimStartMs, tempTrimEndMs)
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) { Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
             }
         }
     }
@@ -837,21 +859,6 @@ fun VideoClipItem(
 private fun formatDurationLabel(ms: Long): String {
     val totalSeconds = ms / 1000f
     return String.format(Locale.getDefault(), "%.1fs", totalSeconds)
-}
-
-@Composable
-fun AddClipButton(onAddVideoClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(64.dp)
-            .background(Color(0xFF222222), RoundedCornerShape(4.dp))
-            .padding(16.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        IconButton(onClick = onAddVideoClick) {
-            Icon(Icons.Default.Add, contentDescription = "Add Clip", tint = Color.White)
-        }
-    }
 }
 
 @Preview(showBackground = true)

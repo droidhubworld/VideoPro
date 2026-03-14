@@ -1,5 +1,8 @@
 package com.droidhubworld.videopro.ui.screen.main
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -16,9 +19,15 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun MainScreen(
-    onNavigateToHome: () -> Unit,
+    onNavigateToHome: (Uri) -> Unit,
     onNavigateToRough: () -> Unit
 ) {
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { onNavigateToHome(it) }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -38,7 +47,7 @@ fun MainScreen(
             )
             
             Button(
-                onClick = onNavigateToHome,
+                onClick = { launcher.launch("video/*") },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier
