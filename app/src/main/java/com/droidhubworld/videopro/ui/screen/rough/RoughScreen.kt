@@ -29,6 +29,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.droidhubworld.videopro.utils.FFmpegNative
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -39,11 +41,16 @@ fun RoughScreen() {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     var videoUri by remember { mutableStateOf<Uri?>(null) }
+    var videoPath by remember { mutableStateOf<String?>(null) }
     var originalDurationMs by remember { mutableLongStateOf(0L) }
     var trimStartMs by remember { mutableLongStateOf(0L) }
     var trimEndMs by remember { mutableLongStateOf(0L) }
     var isSelected by remember { mutableStateOf(false) }
     var thumbnails by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
+    
+    // Preview frame while dragging
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var previewJob by remember { mutableStateOf<Job?>(null) }
 
     val msPerDp = 10f 
     val scrollState = rememberScrollState()
@@ -55,6 +62,10 @@ fun RoughScreen() {
         uri?.let {
             videoUri = it
             thumbnails = emptyList()
+            previewBitmap = null
+            val path = getRealPathFromURI(context, it)
+            videoPath = path
+            
             val retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(context, it)
@@ -64,11 +75,14 @@ fun RoughScreen() {
                 trimStartMs = 0L
                 trimEndMs = duration
 
-                scope.launch(Dispatchers.IO) {
-                    val path = getRealPathFromURI(context, it)
-                    if (path != null) {
+                if (path != null) {
+                    scope.launch(Dispatchers.IO) {
+                        // Dynamic thumbnail count based on timeline width to prevent stretching
+                        val thumbnailWidthDp = 100 // dp
+                        val totalWidthDp = duration / msPerDp
+                        val count = (totalWidthDp / thumbnailWidthDp).toInt().coerceIn(5, 40)
+                        
                         val newThumbnails = mutableListOf<Bitmap>()
-                        val count = 10
                         val step = duration / count
                         for (i in 0 until count) {
                             val timeMs = i * step
@@ -90,6 +104,22 @@ fun RoughScreen() {
         }
     }
 
+    // Function to extract a preview frame during drag
+    fun updatePreview(timeMs: Long) {
+        val path = videoPath ?: return
+        previewJob?.cancel()
+        previewJob = scope.launch(Dispatchers.IO) {
+            // Tiny delay to debounce rapid drags
+            delay(16)
+            val bitmap = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888)
+            if (FFmpegNative.extractFrame(path, timeMs, bitmap)) {
+                withContext(Dispatchers.Main) {
+                    previewBitmap = bitmap
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -101,12 +131,32 @@ fun RoughScreen() {
             if (videoUri == null) {
                 Button(onClick = { launcher.launch("video/*") }) { Text("Select Video") }
             } else {
+                // Preview Area
+                Box(
+                    modifier = Modifier
+                        .size(280.dp, 160.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    previewBitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                    } ?: Text("Preview", color = Color.Gray)
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
                 Text(
-                    text = "Rough Timeline (Ripple Trim)",
+                    text = "Timeline (FFmpeg Frame Sync)",
                     color = Color.White,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 24.dp)
+                    modifier = Modifier.padding(bottom = 16.dp)
                 )
 
                 Box(
@@ -117,7 +167,6 @@ fun RoughScreen() {
                         .horizontalScroll(scrollState),
                     contentAlignment = Alignment.CenterStart
                 ) {
-                    // Constant width container prevents scroll clamping during layout transitions
                     val containerWidthDp = (originalDurationMs / msPerDp).dp
 
                     Box(
@@ -135,8 +184,14 @@ fun RoughScreen() {
                             isTrimming = isTrimming,
                             thumbnails = thumbnails,
                             onTrimChange = { start, end ->
+                                val oldStart = trimStartMs
+                                val oldEnd = trimEndMs
                                 trimStartMs = start
                                 trimEndMs = end
+                                
+                                // Update preview based on which handle moved
+                                if (start != oldStart) updatePreview(start)
+                                else if (end != oldEnd) updatePreview(end)
                             },
                             onTrimStart = { isLeftHandle ->
                                 val startMs = trimStartMs
@@ -145,15 +200,16 @@ fun RoughScreen() {
                                 scope.launch {
                                     if (isLeftHandle) {
                                         scrollState.scrollTo((startMs / msPerDp * density.density).toInt())
+                                        updatePreview(trimStartMs)
                                     } else {
-                                        // Align scroll to match the clip's new absolute position offset
                                         scrollState.scrollTo(currentScroll + (startMs / msPerDp * density.density).toInt())
+                                        updatePreview(trimEndMs)
                                     }
                                 }
                             },
                             onTrimEnd = {
                                 isTrimming = false
-                                scope.launch { scrollState.scrollTo(0) } // Use scrollTo(0) to avoid animation overlap jumps
+                                scope.launch { scrollState.scrollTo(0) } 
                             },
                             onSelect = { isSelected = true }
                         )
@@ -167,7 +223,7 @@ fun RoughScreen() {
                 }
                 Spacer(modifier = Modifier.height(32.dp))
                 Button(
-                    onClick = { videoUri = null; isSelected = false; thumbnails = emptyList() },
+                    onClick = { videoUri = null; isSelected = false; thumbnails = emptyList(); previewBitmap = null },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.6f)),
                     shape = RoundedCornerShape(8.dp)
                 ) { Text("Reset Workspace") }
@@ -211,9 +267,10 @@ fun RoughVideoClipItem(
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onSelect() }
             .clip(RoundedCornerShape(4.dp))
     ) {
+        // Thumbnail Row - Using requiredWidth and fixed weight to prevent "stretching"
         Row(
             modifier = Modifier
-                .width(originalWidthDp)
+                .requiredWidth(originalWidthDp)
                 .fillMaxHeight()
                 .offset(x = -(trimStartMs / msPerDp).dp)
         ) {
@@ -221,7 +278,12 @@ fun RoughVideoClipItem(
                 repeat(5) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) }
             } else {
                 thumbnails.forEach { bitmap ->
-                    Image(bitmap = bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop)
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentScale = ContentScale.Crop
+                    )
                 }
             }
         }
@@ -232,7 +294,7 @@ fun RoughVideoClipItem(
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .width(18.dp)
+                    .width(24.dp) // Wider handle for better touch target
                     .fillMaxHeight()
                     .background(Color.White)
                     .draggable(
@@ -251,12 +313,12 @@ fun RoughVideoClipItem(
                         onDragStopped = { onTrimEnd() }
                     ),
                 contentAlignment = Alignment.Center
-            ) { Box(modifier = Modifier.width(2.dp).height(20.dp).background(Color.Red)) }
+            ) { Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
 
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .width(18.dp)
+                    .width(24.dp)
                     .fillMaxHeight()
                     .background(Color.White)
                     .draggable(
@@ -275,7 +337,7 @@ fun RoughVideoClipItem(
                         onDragStopped = { onTrimEnd() }
                     ),
                 contentAlignment = Alignment.Center
-            ) { Box(modifier = Modifier.width(2.dp).height(20.dp).background(Color.Red)) }
+            ) { Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
         }
     }
 }
