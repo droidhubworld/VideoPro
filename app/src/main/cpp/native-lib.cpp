@@ -116,3 +116,151 @@ Java_com_droidhubworld_videopro_utils_FFmpegNative_extractFrame(JNIEnv *env, job
 
     return frame_found ? JNI_TRUE : JNI_FALSE;
 }
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_droidhubworld_videopro_utils_FFmpegNative_trimVideo(JNIEnv *env, jobject thiz, jstring input_path, jstring output_path, jlong start_ms, jlong end_ms) {
+    const char *in_filename = env->GetStringUTFChars(input_path, nullptr);
+    const char *out_filename = env->GetStringUTFChars(output_path, nullptr);
+
+    AVFormatContext *ifmt_ctx = nullptr;
+    AVFormatContext *ofmt_ctx = nullptr;
+    int ret;
+    int *stream_mapping = nullptr;
+    int stream_mapping_size = 0;
+
+    if ((ret = avformat_open_input(&ifmt_ctx, in_filename, nullptr, nullptr)) < 0) {
+        LOGE("Could not open source file %s", in_filename);
+        goto end;
+    }
+    if ((ret = avformat_find_stream_info(ifmt_ctx, nullptr)) < 0) {
+        LOGE("Could not find stream information");
+        goto end;
+    }
+
+    avformat_alloc_output_context2(&ofmt_ctx, nullptr, nullptr, out_filename);
+    if (!ofmt_ctx) {
+        ret = AVERROR_UNKNOWN;
+        goto end;
+    }
+
+    stream_mapping_size = ifmt_ctx->nb_streams;
+    stream_mapping = (int *)av_calloc(stream_mapping_size, sizeof(*stream_mapping));
+    if (!stream_mapping) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+
+    {
+        int stream_index = 0;
+        for (int i = 0; i < stream_mapping_size; i++) {
+            AVStream *in_stream = ifmt_ctx->streams[i];
+            if (in_stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+                in_stream->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+                stream_mapping[i] = -1;
+                continue;
+            }
+            stream_mapping[i] = stream_index++;
+            AVStream *out_stream = avformat_new_stream(ofmt_ctx, nullptr);
+            if (!out_stream) {
+                ret = AVERROR_UNKNOWN;
+                goto end;
+            }
+            if ((ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar)) < 0) {
+                goto end;
+            }
+            out_stream->codecpar->codec_tag = 0;
+        }
+    }
+
+    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+        if ((ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE)) < 0) {
+            goto end;
+        }
+    }
+
+    if ((ret = avformat_write_header(ofmt_ctx, nullptr)) < 0) {
+        goto end;
+    }
+
+    // Seek to start
+    if (start_ms > 0) {
+        int64_t seek_target = start_ms * AV_TIME_BASE / 1000;
+        ret = av_seek_frame(ifmt_ctx, -1, seek_target, AVSEEK_FLAG_BACKWARD);
+        if (ret < 0) LOGE("Error seeking to start time");
+    }
+
+    int64_t *dts_start_offsets;
+    int64_t *pts_start_offsets;
+    bool *stream_offsets_set;
+    dts_start_offsets = (int64_t *)av_calloc(stream_mapping_size, sizeof(int64_t));
+    pts_start_offsets = (int64_t *)av_calloc(stream_mapping_size, sizeof(int64_t));
+    stream_offsets_set = (bool *)av_calloc(stream_mapping_size, sizeof(bool));
+    for (int i = 0; i < stream_mapping_size; i++) stream_offsets_set[i] = false;
+
+    AVPacket *pkt;
+    pkt = av_packet_alloc();
+    while (1) {
+        AVStream *in_stream, *out_stream;
+        ret = av_read_frame(ifmt_ctx, pkt);
+        if (ret < 0) break;
+
+        in_stream  = ifmt_ctx->streams[pkt->stream_index];
+        if (pkt->stream_index >= stream_mapping_size || stream_mapping[pkt->stream_index] < 0) {
+            av_packet_unref(pkt);
+            continue;
+        }
+        out_stream = ofmt_ctx->streams[stream_mapping[pkt->stream_index]];
+
+        // Check end time
+        int64_t current_pts_ms = pkt->pts * 1000 * in_stream->time_base.num / in_stream->time_base.den;
+        if (end_ms > 0 && current_pts_ms > end_ms) {
+            av_packet_unref(pkt);
+            break;
+        }
+
+        if (!stream_offsets_set[pkt->stream_index]) {
+            dts_start_offsets[pkt->stream_index] = pkt->dts;
+            pts_start_offsets[pkt->stream_index] = pkt->pts;
+            stream_offsets_set[pkt->stream_index] = true;
+        }
+
+        // Adjust PTS and DTS so the output video starts from 0
+        if (pkt->pts != AV_NOPTS_VALUE) {
+            pkt->pts -= pts_start_offsets[pkt->stream_index];
+        }
+        if (pkt->dts != AV_NOPTS_VALUE) {
+            pkt->dts -= dts_start_offsets[pkt->stream_index];
+        }
+
+        pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+        pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+        pkt->duration = av_rescale_q(pkt->duration, in_stream->time_base, out_stream->time_base);
+        pkt->pos = -1;
+        pkt->stream_index = stream_mapping[pkt->stream_index];
+
+        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
+        if (ret < 0) {
+            LOGE("Error muxing packet");
+            break;
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    av_write_trailer(ofmt_ctx);
+
+    av_freep(&dts_start_offsets);
+    av_freep(&pts_start_offsets);
+    av_freep(&stream_offsets_set);
+
+end:
+    if (ifmt_ctx) avformat_close_input(&ifmt_ctx);
+    if (ofmt_ctx && !(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) avio_closep(&ofmt_ctx->pb);
+    if (ofmt_ctx) avformat_free_context(ofmt_ctx);
+    if (stream_mapping) av_freep(&stream_mapping);
+
+    env->ReleaseStringUTFChars(input_path, in_filename);
+    env->ReleaseStringUTFChars(output_path, out_filename);
+
+    return ret >= 0 || ret == AVERROR_EOF ? JNI_TRUE : JNI_FALSE;
+}

@@ -23,4 +23,14 @@ object FFmpegNative {
      * @return true if successful, false otherwise
      */
     external fun extractFrame(videoPath: String, timeMs: Long, bitmap: Bitmap): Boolean
+    
+    /**
+     * Trims a video from startMs to endMs.
+     * @param inputPath path to the input video file
+     * @param outputPath path to the output video file
+     * @param startMs start time in milliseconds
+     * @param endMs end time in milliseconds
+     * @return true if successful, false otherwise
+     */
+    external fun trimVideo(inputPath: String, outputPath: String, startMs: Long, endMs: Long): Boolean
 }

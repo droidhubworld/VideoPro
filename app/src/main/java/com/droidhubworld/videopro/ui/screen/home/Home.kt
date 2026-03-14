@@ -7,7 +7,10 @@ import androidx.annotation.OptIn
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -16,10 +19,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -57,6 +63,8 @@ fun Home(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
+    var showTrimDialog by remember { mutableStateOf(false) }
+
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -71,56 +79,46 @@ fun Home(
         }
     }
 
-    DisposableEffect(exoPlayer) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) {
-                    if (uiState.clips.isNotEmpty()) {
-                        uiState.selectedVideoUri?.let { uri ->
-                            val currentClip = uiState.clips.find { it.uri == uri }
-                            if (currentClip?.durationMs == 0L) {
-                                viewModel.updateClipDuration(uri, exoPlayer.duration, context)
-                            }
-                        }
-                    }
-                }
-            }
-
-            override fun onPositionDiscontinuity(
-                oldPosition: Player.PositionInfo,
-                newPosition: Player.PositionInfo,
-                reason: Int
-            ) {
-                val startMs = viewModel.getClipStartMs(uiState.selectedVideoUri)
-                viewModel.updateProgress(startMs + exoPlayer.currentPosition)
+    // Sync ExoPlayer Playlist with clips
+    LaunchedEffect(uiState.clips) {
+        val mediaItems = uiState.clips.mapNotNull { clip ->
+            clip.uri?.let { uri ->
+                MediaItem.Builder()
+                    .setUri(uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(clip.trimStartMs)
+                            .setEndPositionMs(clip.trimEndMs)
+                            .build()
+                    )
+                    .build()
             }
         }
-        exoPlayer.addListener(listener)
-        onDispose { exoPlayer.removeListener(listener) }
+        
+        if (mediaItems.isNotEmpty()) {
+            val currentPos = exoPlayer.currentPosition
+            val currentIndex = exoPlayer.currentMediaItemIndex
+            exoPlayer.setMediaItems(mediaItems)
+            exoPlayer.prepare()
+            if (currentIndex < mediaItems.size) {
+                exoPlayer.seekTo(currentIndex, currentPos)
+            }
+        } else {
+            exoPlayer.clearMediaItems()
+        }
     }
 
+    // Continuous Progress Loop
     LaunchedEffect(uiState.isPlaying) {
         while (uiState.isPlaying) {
-            val startMs = viewModel.getClipStartMs(uiState.selectedVideoUri)
-            viewModel.updateProgress(startMs + exoPlayer.currentPosition)
-            delay(30)
-        }
-    }
-
-    LaunchedEffect(uiState.selectedVideoUri) {
-        uiState.selectedVideoUri?.let { uri ->
-            val currentMediaItem = exoPlayer.currentMediaItem
-            if (currentMediaItem?.localConfiguration?.uri != uri) {
-                val startMs = viewModel.getClipStartMs(uri)
-                val relativePosition = uiState.currentPositionMs - startMs
-
-                exoPlayer.setMediaItem(MediaItem.fromUri(uri))
-                exoPlayer.prepare()
-                if (relativePosition > 0) {
-                    exoPlayer.seekTo(relativePosition)
-                }
-                exoPlayer.playWhenReady = uiState.isPlaying
+            val currentWindow = exoPlayer.currentMediaItemIndex
+            var accumulatedMs = 0L
+            for (i in 0 until currentWindow) {
+                accumulatedMs += uiState.clips.getOrNull(i)?.durationMs ?: 0L
             }
+            val globalPosition = accumulatedMs + exoPlayer.currentPosition
+            viewModel.updateProgress(globalPosition)
+            delay(30)
         }
     }
 
@@ -134,23 +132,112 @@ fun Home(
         }
     }
 
+    if (showTrimDialog && uiState.selectedClipId != null) {
+        val selectedClip = uiState.clips.find { it.id == uiState.selectedClipId }
+        if (selectedClip != null) {
+            TrimDialog(
+                clip = selectedClip,
+                onDismiss = { showTrimDialog = false },
+                onTrim = { startMs, endMs ->
+                    showTrimDialog = false
+                    viewModel.trimSelectedClip(startMs, endMs, context)
+                }
+            )
+        }
+    }
+
+    if (uiState.isLoading) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.5f)).zIndex(100f), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = Color.Green)
+        }
+    }
+
     EditorScreenContent(
         uiState = uiState,
         exoPlayer = exoPlayer,
         version = version,
         onAddVideoClick = { videoPickerLauncher.launch("video/*") },
         onPlayPauseClick = { viewModel.onPlayPauseClicked() },
+        onUndoClick = { viewModel.undo() },
+        onRedoClick = { viewModel.redo() },
+        onEditClick = {
+            if (uiState.selectedClipId != null) {
+                showTrimDialog = true
+            }
+        },
+        onClipSelected = { id -> viewModel.selectClip(id) },
         onSeek = { position ->
             viewModel.updateProgress(position)
-            // The updateProgress above might change selectedVideoUri, which triggers the LaunchedEffect
-            // But we also need to seek if it's the SAME uri or to ensure it's exact
-            val startMs = viewModel.getClipStartMs(uiState.selectedVideoUri)
-            exoPlayer.seekTo(position - startMs)
+            
+            var accumulatedMs = 0L
+            var targetIndex = 0
+            var targetPosition = 0L
+            for (i in uiState.clips.indices) {
+                val clipDur = uiState.clips[i].durationMs
+                if (position < accumulatedMs + clipDur || i == uiState.clips.lastIndex) {
+                    targetIndex = i
+                    targetPosition = position - accumulatedMs
+                    break
+                }
+                accumulatedMs += clipDur
+            }
+            
+            if (exoPlayer.mediaItemCount > targetIndex) {
+                exoPlayer.seekTo(targetIndex, targetPosition.coerceAtLeast(0))
+            }
         },
         onZoom = { factor -> viewModel.updateZoom(factor) },
         onZoomIn = { viewModel.zoomIn() },
         onZoomOut = { viewModel.zoomOut() },
+        onTrimClip = { _, startMs, endMs ->
+            // Assume dragging trims the currently selected clip, which id matches
+            viewModel.trimSelectedClip(startMs, endMs, context)
+        },
         modifier = modifier
+    )
+}
+
+@Composable
+fun TrimDialog(
+    clip: VideoClip,
+    onDismiss: () -> Unit,
+    onTrim: (Long, Long) -> Unit
+) {
+    var startPercentage by remember { mutableFloatStateOf(clip.trimStartMs.toFloat() / clip.originalDurationMs) }
+    var endPercentage by remember { mutableFloatStateOf(clip.trimEndMs.toFloat() / clip.originalDurationMs) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Trim Clip") },
+        text = {
+            Column {
+                Text("Start: ${(startPercentage * clip.originalDurationMs / 1000).toInt()}s")
+                Slider(
+                    value = startPercentage,
+                    onValueChange = { if (it < endPercentage) startPercentage = it }
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("End: ${(endPercentage * clip.originalDurationMs / 1000).toInt()}s")
+                Slider(
+                    value = endPercentage,
+                    onValueChange = { if (it > startPercentage) endPercentage = it }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val startMs = (startPercentage * clip.originalDurationMs).toLong()
+                val endMs = (endPercentage * clip.originalDurationMs).toLong()
+                onTrim(startMs, endMs)
+            }) {
+                Text("Trim")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
     )
 }
 
@@ -161,16 +248,21 @@ fun EditorScreenContent(
     version: String,
     onAddVideoClick: () -> Unit,
     onPlayPauseClick: () -> Unit,
+    onUndoClick: () -> Unit,
+    onRedoClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onClipSelected: (String) -> Unit,
     onSeek: (Long) -> Unit,
     onZoom: (Float) -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
+    onTrimClip: (String, Long, Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = { EditorTopBar() },
-        bottomBar = { EditorBottomBar() },
+        bottomBar = { EditorBottomBar(onEditClick = onEditClick) },
         containerColor = Color.Black
     ) { innerPadding ->
         Column(
@@ -189,16 +281,22 @@ fun EditorScreenContent(
             VideoPreviewSection(
                 exoPlayer = exoPlayer,
                 isPlaying = uiState.isPlaying,
+                canUndo = uiState.canUndo,
+                canRedo = uiState.canRedo,
                 onPlayPauseClick = onPlayPauseClick,
+                onUndoClick = onUndoClick,
+                onRedoClick = onRedoClick,
                 modifier = Modifier.weight(1.2f)
             )
             EditorTimeline(
                 uiState = uiState,
                 onAddVideoClick = onAddVideoClick,
+                onClipSelected = onClipSelected,
                 onSeek = onSeek,
                 onZoom = onZoom,
                 onZoomIn = onZoomIn,
                 onZoomOut = onZoomOut,
+                onTrimClip = onTrimClip,
                 modifier = Modifier.weight(0.8f)
             )
         }
@@ -210,7 +308,11 @@ fun EditorScreenContent(
 fun VideoPreviewSection(
     exoPlayer: ExoPlayer,
     isPlaying: Boolean,
+    canUndo: Boolean,
+    canRedo: Boolean,
     onPlayPauseClick: () -> Unit,
+    onUndoClick: () -> Unit,
+    onRedoClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -238,14 +340,24 @@ fun VideoPreviewSection(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            EditorIconButton(Icons.Default.Refresh, "Undo")
             EditorIconButton(
-                if (isPlaying) Icons.Default.Menu else Icons.Default.PlayArrow,
-                "Play/Pause",
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                description = "Undo",
+                tint = if (canUndo) Color.White else Color.Gray,
+                onClick = { if (canUndo) onUndoClick() }
+            )
+            EditorIconButton(
+                icon = if (isPlaying) Icons.Default.Menu else Icons.Default.PlayArrow,
+                description = "Play/Pause",
                 size = 32.dp,
                 onClick = onPlayPauseClick
             )
-            EditorIconButton(Icons.Default.CheckCircle, "Redo")
+            EditorIconButton(
+                icon = Icons.AutoMirrored.Filled.ArrowForward,
+                description = "Redo",
+                tint = if (canRedo) Color.White else Color.Gray,
+                onClick = { if (canRedo) onRedoClick() }
+            )
         }
     }
 }
@@ -255,10 +367,11 @@ fun EditorIconButton(
     icon: ImageVector,
     description: String,
     size: androidx.compose.ui.unit.Dp = 20.dp,
+    tint: Color = Color.White,
     onClick: () -> Unit = {}
 ) {
     IconButton(onClick = onClick) {
-        Icon(icon, contentDescription = description, tint = Color.White, modifier = Modifier.size(size))
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(size))
     }
 }
 
@@ -304,7 +417,7 @@ fun EditorTopBar() {
 }
 
 @Composable
-fun EditorBottomBar() {
+fun EditorBottomBar(onEditClick: () -> Unit = {}) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -313,7 +426,7 @@ fun EditorBottomBar() {
             .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
-        BottomBarItem(Icons.Default.Edit, "Edit")
+        BottomBarItem(Icons.Default.Edit, "Edit", onClick = onEditClick)
         BottomBarItem(Icons.Default.Menu, "Audio")
         BottomBarItem(Icons.Default.Add, "Text")
         BottomBarItem(Icons.Default.Face, "Stickers")
@@ -322,10 +435,12 @@ fun EditorBottomBar() {
 }
 
 @Composable
-fun BottomBarItem(icon: ImageVector, label: String) {
+fun BottomBarItem(icon: ImageVector, label: String, onClick: () -> Unit = {}) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(8.dp)
+        modifier = Modifier
+            .padding(8.dp)
+            .clickable { onClick() }
     ) {
         Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(24.dp))
         Spacer(modifier = Modifier.height(4.dp))
@@ -337,10 +452,12 @@ fun BottomBarItem(icon: ImageVector, label: String) {
 fun EditorTimeline(
     uiState: HomeUiState,
     onAddVideoClick: () -> Unit,
+    onClipSelected: (String) -> Unit,
     onSeek: (Long) -> Unit,
     onZoom: (Float) -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
+    onTrimClip: (String, Long, Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -386,6 +503,9 @@ fun EditorTimeline(
                 val offsetInDp = (offsetMs / uiState.msPerDp).toFloat().dp
                 val offsetPx = with(density) { offsetInDp.toPx() }.toInt()
                 listState.scrollToItem(itemIndex, offsetPx)
+            } else if (uiState.clips.isNotEmpty()) {
+                // If we're at the very end
+                listState.scrollToItem(uiState.clips.size, 0)
             }
         }
     }
@@ -418,8 +538,27 @@ fun EditorTimeline(
                 contentPadding = PaddingValues(horizontal = halfScreenWidth),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                items(uiState.clips) { clip ->
-                    VideoClipItem(clip, uiState.msPerDp)
+                items(uiState.clips, key = { it.id }) { clip ->
+                    VideoClipItem(
+                        clip = clip, 
+                        msPerDp = uiState.msPerDp, 
+                        isSelected = uiState.selectedClipId == clip.id,
+                        onClick = { onClipSelected(clip.id) },
+                        onTrim = { startMs, endMs ->
+                            onTrimClip(clip.id, startMs, endMs)
+                        },
+                        onDragHandle = { previewTrimMs ->
+                            // When dragging a handle, seek player to that exact boundary
+                            var timeMs = 0L
+                            for (c in uiState.clips) {
+                                if (c.id == clip.id) break
+                                timeMs += c.durationMs
+                            }
+                            // We preview relative to the start of the currently visible part of this clip
+                            val offsetFromStartOfClip = previewTrimMs - clip.trimStartMs
+                            onSeek(timeMs + offsetFromStartOfClip)
+                        }
+                    )
                 }
 
                 item {
@@ -530,19 +669,41 @@ private fun formatTimelineLabel(seconds: Int): String {
 }
 
 @Composable
-fun VideoClipItem(clip: VideoClip, msPerDp: Float) {
-    val width = if (clip.durationMs > 0L) (clip.durationMs / msPerDp).toFloat().dp else 150.dp
+fun VideoClipItem(
+    clip: VideoClip, 
+    msPerDp: Float, 
+    isSelected: Boolean, 
+    onClick: () -> Unit,
+    onTrim: (Long, Long) -> Unit = { _, _ -> },
+    onDragHandle: (Long) -> Unit = {}
+) {
+    val density = LocalDensity.current
+    var tempTrimStartMs by remember(clip.id, clip.trimStartMs, isSelected) { mutableLongStateOf(clip.trimStartMs) }
+    var tempTrimEndMs by remember(clip.id, clip.trimEndMs, isSelected) { mutableLongStateOf(clip.trimEndMs) }
+
+    val effectiveDuration = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(0L)
+    val width = if (effectiveDuration > 0L) (effectiveDuration / msPerDp).toFloat().dp else 150.dp
+    
+    val originalWidth = if (clip.originalDurationMs > 0L) (clip.originalDurationMs / msPerDp).toFloat().dp else 150.dp
 
     Box(
         modifier = Modifier
             .width(width)
             .height(64.dp)
             .padding(horizontal = 0.5.dp)
-            .background(clip.color, RoundedCornerShape(4.dp)),
-        contentAlignment = Alignment.Center
+            .background(clip.color, RoundedCornerShape(4.dp))
+            .then(if (isSelected) Modifier.border(2.dp, Color.White, RoundedCornerShape(4.dp)) else Modifier)
+            .clickable { onClick() }
+            .clip(RoundedCornerShape(4.dp)),
+        contentAlignment = Alignment.CenterStart
     ) {
         if (clip.thumbnails.isNotEmpty()) {
-            Row(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .width(originalWidth)
+                    .fillMaxHeight()
+                    .offset(x = -(tempTrimStartMs / msPerDp).toFloat().dp)
+            ) {
                 clip.thumbnails.forEach { bitmap ->
                     Image(
                         bitmap = bitmap.asImageBitmap(),
@@ -553,13 +714,70 @@ fun VideoClipItem(clip: VideoClip, msPerDp: Float) {
                 }
             }
         }
+        
+        // Add overlay to darken
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
+        
         Text(
             clip.name,
             color = Color.White,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.background(Color.Black.copy(0.4f), RoundedCornerShape(2.dp)).padding(horizontal = 4.dp)
+            modifier = Modifier.padding(start = 16.dp).background(Color.Black.copy(0.4f), RoundedCornerShape(2.dp)).padding(horizontal = 4.dp)
         )
+
+        if (isSelected) {
+            // Left Handle
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(16.dp)
+                    .fillMaxHeight()
+                    .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp))
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                onTrim(tempTrimStartMs, tempTrimEndMs)
+                            }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            val dragDp = with(density) { dragAmount.toDp() }
+                            val dragMs = (dragDp.value * msPerDp).toLong()
+                            tempTrimStartMs = (tempTrimStartMs + dragMs).coerceIn(0L, tempTrimEndMs - 100L)
+                            onDragHandle(tempTrimStartMs)
+                        }
+                    }
+            ) {
+                Box(modifier = Modifier.width(2.dp).height(24.dp).background(Color.Black).align(Alignment.Center))
+            }
+
+            // Right Handle
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(16.dp)
+                    .fillMaxHeight()
+                    .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp))
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                onTrim(tempTrimStartMs, tempTrimEndMs)
+                            }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            val dragDp = with(density) { dragAmount.toDp() }
+                            val dragMs = (dragDp.value * msPerDp).toLong()
+                            tempTrimEndMs = (tempTrimEndMs + dragMs).coerceIn(tempTrimStartMs + 100L, clip.originalDurationMs)
+                            onDragHandle(tempTrimEndMs)
+                        }
+                    }
+            ) {
+                Box(modifier = Modifier.width(2.dp).height(24.dp).background(Color.Black).align(Alignment.Center))
+            }
+            
+            // Highlight Border inside
+            Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
+        }
     }
 }
 

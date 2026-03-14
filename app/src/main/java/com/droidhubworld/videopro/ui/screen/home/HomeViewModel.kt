@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import javax.inject.Inject
 import kotlin.random.Random
@@ -25,20 +26,62 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
+    private val undoStack = mutableListOf<List<VideoClip>>()
+    private val redoStack = mutableListOf<List<VideoClip>>()
+
     private val colors = listOf(
         Color(0xFF42A5F5), Color(0xFF66BB6A), Color(0xFFFFA726),
         Color(0xFFAB47BC), Color(0xFFEF5350), Color(0xFF26A69A)
     )
+
+    private fun saveState() {
+        undoStack.add(_uiState.value.clips)
+        if (undoStack.size > 20) {
+            undoStack.removeAt(0)
+        }
+        redoStack.clear()
+        _uiState.value = _uiState.value.copy(
+            canUndo = undoStack.isNotEmpty(),
+            canRedo = redoStack.isNotEmpty()
+        )
+    }
+
+    fun undo() {
+        if (undoStack.isNotEmpty()) {
+            redoStack.add(_uiState.value.clips)
+            val previousState = undoStack.removeAt(undoStack.lastIndex)
+            _uiState.value = _uiState.value.copy(
+                clips = previousState,
+                totalDurationMs = previousState.sumOf { it.durationMs },
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty()
+            )
+        }
+    }
+
+    fun redo() {
+        if (redoStack.isNotEmpty()) {
+            undoStack.add(_uiState.value.clips)
+            val nextState = redoStack.removeAt(redoStack.lastIndex)
+            _uiState.value = _uiState.value.copy(
+                clips = nextState,
+                totalDurationMs = nextState.sumOf { it.durationMs },
+                canUndo = undoStack.isNotEmpty(),
+                canRedo = redoStack.isNotEmpty()
+            )
+        }
+    }
 
     fun addVideo(uri: Uri, context: Context) {
         addVideos(listOf(uri), context)
     }
 
     fun addVideos(uris: List<Uri>, context: Context) {
+        saveState()
         val newClips = uris.mapIndexed { index, uri ->
             VideoClip(
+                id = System.currentTimeMillis().toString() + index,
                 name = "Video ${(_uiState.value.clips.size + index + 1)}",
-                durationMs = 0,
                 color = colors[Random.nextInt(colors.size)],
                 uri = uri
             )
@@ -50,10 +93,6 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         // Load data for new clips immediately
         uris.forEach { uri ->
             loadClipData(uri, context)
-        }
-
-        if (_uiState.value.selectedVideoUri == null && uris.isNotEmpty()) {
-            _uiState.value = _uiState.value.copy(selectedVideoUri = uris.first())
         }
     }
 
@@ -77,8 +116,12 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     }
 
     fun updateClipDuration(uri: Uri, durationMs: Long, context: Context) {
+        // Do not save state here to avoid undoing background metadata loading
         val updatedClips = _uiState.value.clips.map {
-            if (it.uri == uri) it.copy(durationMs = durationMs) else it
+            if (it.uri == uri) it.copy(
+                originalDurationMs = durationMs,
+                trimEndMs = durationMs
+            ) else it
         }
         val totalDuration = updatedClips.sumOf { it.durationMs }
         _uiState.value = _uiState.value.copy(
@@ -125,40 +168,36 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         return path
     }
 
-    fun getClipStartMs(uri: Uri?): Long {
-        if (uri == null) return 0L
-        var startMs = 0L
-        for (clip in _uiState.value.clips) {
-            if (clip.uri == uri) return startMs
-            startMs += clip.durationMs
+    fun selectClip(id: String?) {
+        _uiState.value = _uiState.value.copy(selectedClipId = id)
+    }
+
+    fun trimSelectedClip(startMs: Long, endMs: Long, context: Context) {
+        val selectedId = _uiState.value.selectedClipId ?: return
+        
+        saveState()
+
+        val updatedClips = _uiState.value.clips.map {
+            if (it.id == selectedId) {
+                it.copy(
+                    trimStartMs = startMs.coerceAtLeast(0L),
+                    trimEndMs = endMs.coerceAtMost(it.originalDurationMs)
+                )
+            } else it
         }
-        return 0L
+        
+        _uiState.value = _uiState.value.copy(
+            clips = updatedClips,
+            totalDurationMs = updatedClips.sumOf { it.durationMs }
+        )
     }
 
     fun updateProgress(globalPositionMs: Long) {
         if (_uiState.value.currentPositionMs != globalPositionMs) {
-            val newState = _uiState.value.copy(
+            _uiState.value = _uiState.value.copy(
                 currentPositionMs = globalPositionMs,
                 currentTime = formatTime(globalPositionMs)
             )
-
-            // Auto-switch selected video if position moves to another clip
-            var accumulatedMs = 0L
-            var currentUri: Uri? = null
-            for (clip in newState.clips) {
-                val clipDuration = if (clip.durationMs > 0) clip.durationMs else 1000L // Fallback for loading state
-                if (globalPositionMs >= accumulatedMs && globalPositionMs < accumulatedMs + clipDuration) {
-                    currentUri = clip.uri
-                    break
-                }
-                accumulatedMs += clipDuration
-            }
-
-            if (currentUri != null && currentUri != newState.selectedVideoUri) {
-                _uiState.value = newState.copy(selectedVideoUri = currentUri)
-            } else {
-                _uiState.value = newState
-            }
         }
     }
 
@@ -194,15 +233,22 @@ data class HomeUiState(
     val currentTime: String = "00:00.00",
     val currentPositionMs: Long = 0,
     val totalDurationMs: Long = 0,
-    val selectedVideoUri: Uri? = null,
     val isPlaying: Boolean = false,
-    val msPerDp: Float = 10f // Default zoom level: 1dp = 10ms
+    val selectedClipId: String? = null,
+    val msPerDp: Float = 10f, // Default zoom level: 1dp = 10ms
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false
 )
 
 data class VideoClip(
+    val id: String,
     val name: String,
-    val durationMs: Long,
+    val originalDurationMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
     val color: Color,
     val uri: Uri? = null,
     val thumbnails: List<Bitmap> = emptyList()
-)
+) {
+    val durationMs: Long get() = (trimEndMs - trimStartMs).coerceAtLeast(0L)
+}
