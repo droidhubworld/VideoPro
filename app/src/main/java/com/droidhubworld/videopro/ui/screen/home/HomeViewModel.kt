@@ -192,6 +192,59 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         )
     }
 
+    fun splitSelectedClip() {
+        val selectedId = _uiState.value.selectedClipId ?: return
+        val positionMs = _uiState.value.currentPositionMs
+        val currentClips = _uiState.value.clips
+        
+        var accumulatedMs = 0L
+        var targetClipIndex = -1
+        for (i in currentClips.indices) {
+            val clipDur = currentClips[i].durationMs
+            if (positionMs >= accumulatedMs && positionMs < accumulatedMs + clipDur) {
+                targetClipIndex = i
+                break
+            }
+            accumulatedMs += clipDur
+        }
+        
+        if (targetClipIndex == -1) return
+        
+        val clip = currentClips[targetClipIndex]
+        val splitPointInClipMs = positionMs - accumulatedMs
+        val absoluteSplitPointMs = clip.trimStartMs + splitPointInClipMs
+        
+        // Don't split too close to edges (e.g., 100ms)
+        if (splitPointInClipMs < 100L || (clip.durationMs - splitPointInClipMs) < 100L) return
+
+        saveState()
+        
+        val firstPart = clip.copy(id = System.currentTimeMillis().toString() + "_1", trimEndMs = absoluteSplitPointMs)
+        val secondPart = clip.copy(id = (System.currentTimeMillis() + 1).toString() + "_2", trimStartMs = absoluteSplitPointMs)
+        
+        val newList = currentClips.toMutableList()
+        newList.removeAt(targetClipIndex)
+        newList.add(targetClipIndex, firstPart)
+        newList.add(targetClipIndex + 1, secondPart)
+        
+        _uiState.value = _uiState.value.copy(
+            clips = newList,
+            totalDurationMs = newList.sumOf { it.durationMs },
+            selectedClipId = secondPart.id
+        )
+    }
+
+    fun deleteSelectedClip() {
+        val selectedId = _uiState.value.selectedClipId ?: return
+        saveState()
+        val newList = _uiState.value.clips.filter { it.id != selectedId }
+        _uiState.value = _uiState.value.copy(
+            clips = newList,
+            totalDurationMs = newList.sumOf { it.durationMs },
+            selectedClipId = null
+        )
+    }
+
     fun updateProgress(globalPositionMs: Long) {
         if (_uiState.value.currentPositionMs != globalPositionMs) {
             _uiState.value = _uiState.value.copy(
@@ -216,6 +269,15 @@ class HomeViewModel @Inject constructor() : ViewModel() {
 
     fun zoomOut() {
         updateZoom(0.66f)
+    }
+
+    fun moveClip(fromIndex: Int, toIndex: Int) {
+        if (fromIndex == toIndex) return
+        saveState()
+        val newList = _uiState.value.clips.toMutableList()
+        val clip = newList.removeAt(fromIndex)
+        newList.add(toIndex, clip)
+        _uiState.value = _uiState.value.copy(clips = newList)
     }
 
     private fun formatTime(ms: Long): String {
