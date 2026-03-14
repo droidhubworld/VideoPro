@@ -60,6 +60,7 @@ import androidx.media3.ui.PlayerView
 import com.droidhubworld.videopro.ui.theme.VideoProTheme
 import com.droidhubworld.videopro.utils.FFmpegNative
 import kotlinx.coroutines.delay
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @Composable
@@ -444,7 +445,7 @@ fun EditorTimeline(
     var dragOffset by remember { mutableFloatStateOf(0f) }
 
     // Animated Zoom Out Effect when dragging - Significantly wider view
-    // Using a target value around 80-100 ms/dp to make clips look smaller (around 60dp for a 6s clip)
+    // Using a target value around 150 ms/dp to make clips look smaller (around 60dp for a 6s clip)
     val displayMsPerDp by animateFloatAsState(
         targetValue = if (draggedIndex != null) 150f else uiState.msPerDp,
         animationSpec = tween(durationMillis = 300),
@@ -517,6 +518,7 @@ fun EditorTimeline(
 
             LazyRow(
                 state = listState,
+                userScrollEnabled = draggedIndex == null && !isTrimming, // Disable scrolling timeline while dragging OR trimming
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = halfScreenWidth),
                 verticalAlignment = Alignment.CenterVertically
@@ -764,7 +766,7 @@ fun VideoClipItem(
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
         
         Text(
-            clip.name,
+            formatDurationLabel(effectiveDuration),
             color = Color.White,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
@@ -797,7 +799,7 @@ fun VideoClipItem(
                 contentAlignment = Alignment.Center
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Gray))
+                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Red))
                     Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Gray))
                 }
             }
@@ -824,12 +826,17 @@ fun VideoClipItem(
                 contentAlignment = Alignment.Center
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Gray))
+                    Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Red))
                     Box(modifier = Modifier.width(1.5.dp).height(16.dp).background(Color.Gray))
                 }
             }
         }
     }
+}
+
+private fun formatDurationLabel(ms: Long): String {
+    val totalSeconds = ms / 1000f
+    return String.format(Locale.getDefault(), "%.1fs", totalSeconds)
 }
 
 @Composable
