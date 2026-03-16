@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -270,19 +271,22 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     }
 
     fun onPlaybackEnded() {
-        val totalDur = _uiState.value.totalDurationMs
-        _uiState.value = _uiState.value.copy(
-            isPlaying = false,
-            currentPositionMs = totalDur,
-            currentTime = formatTime(totalDur)
-        )
+        _uiState.update { it.copy(isPlaying = false) }
     }
 
     fun onPlayPauseClicked() {
-        if (!_uiState.value.isPlaying && _uiState.value.currentPositionMs >= _uiState.value.totalDurationMs) {
-            _uiState.value = _uiState.value.copy(currentPositionMs = 0, currentTime = "00:00.00")
+        _uiState.update { currentState ->
+            val isAtEnd = currentState.currentPositionMs >= currentState.totalDurationMs - 100
+            if (!currentState.isPlaying && isAtEnd) {
+                currentState.copy(
+                    isPlaying = true,
+                    currentPositionMs = 0,
+                    currentTime = "00:00.00"
+                )
+            } else {
+                currentState.copy(isPlaying = !currentState.isPlaying)
+            }
         }
-        _uiState.value = _uiState.value.copy(isPlaying = !_uiState.value.isPlaying)
     }
 
     fun updateZoom(zoomFactor: Float) {

@@ -156,11 +156,6 @@ fun Home(
     // Continuous Progress Loop
     LaunchedEffect(uiState.isPlaying) {
         while (uiState.isPlaying) {
-            if (exoPlayer.playbackState == Player.STATE_ENDED) {
-                viewModel.onPlaybackEnded()
-                break
-            }
-            
             val currentWindow = exoPlayer.currentMediaItemIndex
             var accumulatedMs = 0L
             for (i in 0 until currentWindow) {
@@ -646,7 +641,8 @@ fun EditorTimeline(
                 val offsetPx = with(density) { offsetInDp.toPx() }.toInt()
                 listState.scrollToItem(itemIndex * 2, offsetPx)
             } else if (uiState.clips.isNotEmpty()) {
-                listState.scrollToItem(uiState.clips.size * 2 - 1, Int.MAX_VALUE)
+                // Scroll to end of last clip
+                listState.scrollToItem(uiState.clips.size * 2 - 2, Int.MAX_VALUE)
             }
         }
     }
@@ -977,8 +973,13 @@ fun VideoClipItem(
     val layoutWidth = (baseWidthMs.toFloat() / msPerDp).dp
     val originalWidthDp = (clip.originalDurationMs.coerceAtLeast(baseWidthMs) / msPerDp).dp
 
+    // Calculate the visual offset to keep the right edge stable during start-trimming
+    val visualOffsetMs = tempTrimStartMs - clip.trimStartMs
+    val visualOffsetPx = with(density) { (visualOffsetMs.toFloat() / msPerDp).dp.roundToPx() }
+
     Box(
         modifier = modifier
+            .offset { IntOffset(visualOffsetPx, 0) }
             .width(layoutWidth)
             .height(64.dp)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
