@@ -1,6 +1,7 @@
 package com.droidhubworld.videopro.ui.screen.home
 
 import android.net.Uri
+import android.view.LayoutInflater
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
@@ -20,8 +21,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -32,11 +33,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -53,12 +57,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.droidhubworld.videopro.R
 import com.droidhubworld.videopro.ui.theme.VideoProTheme
 import com.droidhubworld.videopro.utils.FFmpegNative
 import kotlinx.coroutines.delay
@@ -74,6 +80,7 @@ fun Home(
     val version = remember { FFmpegNative.getFFmpegVersion() }
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    var showTransitionDialog by remember { mutableStateOf<String?>(null) }
 
     // Add initial video if provided
     LaunchedEffect(initialUri) {
@@ -95,6 +102,21 @@ fun Home(
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
+        }
+    }
+
+    // Handle Playback State Changes
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_ENDED) {
+                    viewModel.onPlaybackEnded()
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
         }
     }
 
@@ -130,6 +152,11 @@ fun Home(
     // Continuous Progress Loop
     LaunchedEffect(uiState.isPlaying) {
         while (uiState.isPlaying) {
+            if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                viewModel.onPlaybackEnded()
+                break
+            }
+            
             val currentWindow = exoPlayer.currentMediaItemIndex
             var accumulatedMs = 0L
             for (i in 0 until currentWindow) {
@@ -142,6 +169,9 @@ fun Home(
     }
 
     LaunchedEffect(uiState.isPlaying) {
+        if (uiState.isPlaying && exoPlayer.playbackState == Player.STATE_ENDED) {
+            exoPlayer.seekTo(0, 0)
+        }
         exoPlayer.playWhenReady = uiState.isPlaying
     }
 
@@ -155,6 +185,16 @@ fun Home(
         Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.5f)).zIndex(100f), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = Color.Green)
         }
+    }
+
+    if (showTransitionDialog != null) {
+        TransitionSelectorDialog(
+            onDismiss = { showTransitionDialog = null },
+            onTransitionSelected = { type ->
+                viewModel.setTransition(showTransitionDialog!!, type)
+                showTransitionDialog = null
+            }
+        )
     }
 
     EditorScreenContent(
@@ -195,8 +235,38 @@ fun Home(
         onTrimClip = { _, startMs, endMs ->
             viewModel.trimSelectedClip(startMs, endMs, context)
         },
+        onTransitionClick = { clipId -> showTransitionDialog = clipId },
         modifier = modifier
     )
+}
+
+@Composable
+fun TransitionSelectorDialog(
+    onDismiss: () -> Unit,
+    onTransitionSelected: (TransitionType) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFF1A1A1A)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Select Transition", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(16.dp))
+                TransitionType.entries.forEach { type ->
+                    TextButton(
+                        onClick = { onTransitionSelected(type) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(type.name.replace("_", " "), color = Color.White)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -217,6 +287,7 @@ fun EditorScreenContent(
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
     onTrimClip: (String, Long, Long) -> Unit,
+    onTransitionClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Scaffold(
@@ -249,10 +320,8 @@ fun EditorScreenContent(
             Spacer(modifier = Modifier.height(8.dp))
 
             VideoPreviewSection(
+                uiState = uiState,
                 exoPlayer = exoPlayer,
-                isPlaying = uiState.isPlaying,
-                canUndo = uiState.canUndo,
-                canRedo = uiState.canRedo,
                 onPlayPauseClick = onPlayPauseClick,
                 onUndoClick = onUndoClick,
                 onRedoClick = onRedoClick,
@@ -268,6 +337,7 @@ fun EditorScreenContent(
                 onZoomIn = onZoomIn,
                 onZoomOut = onZoomOut,
                 onTrimClip = onTrimClip,
+                onTransitionClick = onTransitionClick,
                 modifier = Modifier.weight(0.8f)
             )
         }
@@ -277,10 +347,8 @@ fun EditorScreenContent(
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoPreviewSection(
+    uiState: HomeUiState,
     exoPlayer: ExoPlayer,
-    isPlaying: Boolean,
-    canUndo: Boolean,
-    canRedo: Boolean,
     onPlayPauseClick: () -> Unit,
     onUndoClick: () -> Unit,
     onRedoClick: () -> Unit,
@@ -292,16 +360,79 @@ fun VideoPreviewSection(
             .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
-        AndroidView(
-            factory = { context ->
-                PlayerView(context).apply {
-                    player = exoPlayer
-                    useController = false
-                    setBackgroundColor(android.graphics.Color.BLACK)
+        // Transition Preview State
+        val currentMs = uiState.currentPositionMs
+        var activeTransition by remember { mutableStateOf<TransitionType?>(null) }
+        var overlayAlpha by remember { mutableFloatStateOf(0f) }
+        var playerAlpha by remember { mutableFloatStateOf(1f) }
+        var blurRadius by remember { mutableStateOf(0.dp) }
+
+        LaunchedEffect(currentMs, uiState.clips) {
+            var accumulatedMs = 0L
+            var found = false
+            for (clip in uiState.clips) {
+                val cutPoint = accumulatedMs + clip.durationMs
+                val trans = clip.transitionAfter
+                if (trans != null && trans.type != TransitionType.NONE) {
+                    val halfDur = trans.durationMs / 2
+                    if (currentMs in (cutPoint - halfDur)..(cutPoint + halfDur)) {
+                        found = true
+                        activeTransition = trans.type
+                        val progress = (currentMs - (cutPoint - halfDur)).toFloat() / trans.durationMs
+                        
+                        when (trans.type) {
+                            TransitionType.FADE_BLACK -> {
+                                overlayAlpha = if (progress < 0.5f) progress * 2 else (1f - progress) * 2
+                                playerAlpha = 1f
+                            }
+                            TransitionType.CROSS_DISSOLVE -> {
+                                // Simulate cross dissolve by fading the only player out and back in
+                                playerAlpha = if (progress < 0.5f) 1f - progress * 2 else (progress - 0.5f) * 2
+                                overlayAlpha = 0f
+                            }
+                            TransitionType.BLUR -> {
+                                blurRadius = if (progress < 0.5f) (progress * 40).dp else ((1f - progress) * 40).dp
+                                playerAlpha = 1f
+                            }
+                            else -> {}
+                        }
+                        break
+                    }
                 }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+                accumulatedMs += clip.durationMs
+            }
+            if (!found) {
+                activeTransition = null
+                overlayAlpha = 0f
+                playerAlpha = 1f
+                blurRadius = 0.dp
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    alpha = playerAlpha
+                }
+                .blur(blurRadius)
+        ) {
+            AndroidView(
+                factory = { context ->
+                    LayoutInflater.from(context).inflate(R.layout.player_view_texture, null).apply {
+                        this as PlayerView
+                        player = exoPlayer
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // Fade Overlay
+        if (activeTransition == TransitionType.FADE_BLACK) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = overlayAlpha)))
+        }
 
         Row(
             modifier = Modifier
@@ -314,11 +445,11 @@ fun VideoPreviewSection(
             EditorIconButton(
                 icon = Icons.AutoMirrored.Filled.ArrowBack,
                 description = "Undo",
-                tint = if (canUndo) Color.White else Color.Gray,
-                onClick = { if (canUndo) onUndoClick() }
+                tint = if (uiState.canUndo) Color.White else Color.Gray,
+                onClick = { if (uiState.canUndo) onUndoClick() }
             )
             EditorIconButton(
-                icon = if (isPlaying) Icons.Default.Menu else Icons.Default.PlayArrow,
+                icon = if (uiState.isPlaying) Icons.Default.Menu else Icons.Default.PlayArrow,
                 description = "Play/Pause",
                 size = 32.dp,
                 onClick = onPlayPauseClick
@@ -326,8 +457,8 @@ fun VideoPreviewSection(
             EditorIconButton(
                 icon = Icons.AutoMirrored.Filled.ArrowForward,
                 description = "Redo",
-                tint = if (canRedo) Color.White else Color.Gray,
-                onClick = { if (canRedo) onRedoClick() }
+                tint = if (uiState.canRedo) Color.White else Color.Gray,
+                onClick = { if (uiState.canRedo) onRedoClick() }
             )
         }
     }
@@ -404,8 +535,9 @@ fun EditorBottomBar(
             .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceEvenly
     ) {
+        BottomBarItem(Icons.Default.Build, "Split", onClick = onSplitClick)
+        
         if (isClipSelected) {
-            BottomBarItem(Icons.Default.Build, "Split", onClick = onSplitClick)
             BottomBarItem(Icons.Default.KeyboardArrowUp, "Speed")
             BottomBarItem(Icons.Default.PlayArrow, "Animation")
             BottomBarItem(Icons.Default.Delete, "Delete", onClick = onDeleteClick)
@@ -413,8 +545,7 @@ fun EditorBottomBar(
             BottomBarItem(Icons.Default.Edit, "Edit")
             BottomBarItem(Icons.Default.Menu, "Audio")
             BottomBarItem(Icons.Default.Add, "Text")
-            BottomBarItem(Icons.Default.Face, "Stickers")
-            BottomBarItem(Icons.Default.Build, "Effects")
+            BottomBarItem(Icons.Default.Delete, "Delete", onClick = onDeleteClick)
         }
     }
 }
@@ -444,6 +575,7 @@ fun EditorTimeline(
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
     onTrimClip: (String, Long, Long) -> Unit,
+    onTransitionClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -470,13 +602,21 @@ fun EditorTimeline(
         if (isDragged && draggedIndex == null) {
             snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
                 .collect { (index, offset) ->
+                    val clipIndex = index / 2
+                    val isTransition = index % 2 != 0
+                    
                     var timeMs = 0L
-                    for (i in 0 until index) {
+                    for (i in 0 until clipIndex) {
                         timeMs += uiState.clips.getOrNull(i)?.durationMs ?: 0L
                     }
-                    val offsetInDp = with(density) { offset.toDp() }
-                    val offsetMs = (offsetInDp.value * displayMsPerDp).toLong()
-                    onSeek(timeMs + offsetMs)
+                    
+                    if (!isTransition) {
+                        val offsetInDp = with(density) { offset.toDp() }
+                        val offsetMs = (offsetInDp.value * displayMsPerDp).toLong()
+                        onSeek(timeMs + offsetMs)
+                    } else {
+                        onSeek(timeMs + (uiState.clips.getOrNull(clipIndex)?.durationMs ?: 0L))
+                    }
                 }
         }
     }
@@ -500,9 +640,9 @@ fun EditorTimeline(
             if (itemIndex != -1) {
                 val offsetInDp = (offsetMs / displayMsPerDp).toFloat().dp
                 val offsetPx = with(density) { offsetInDp.toPx() }.toInt()
-                listState.scrollToItem(itemIndex, offsetPx)
+                listState.scrollToItem(itemIndex * 2, offsetPx)
             } else if (uiState.clips.isNotEmpty()) {
-                listState.scrollToItem(uiState.clips.size, 0)
+                listState.scrollToItem(uiState.clips.size * 2 - 1, Int.MAX_VALUE)
             }
         }
     }
@@ -534,7 +674,7 @@ fun EditorTimeline(
                     Text("Add Video", color = Color.White, fontSize = 14.sp)
                 }
             } else {
-                // Playhead Line
+                // Playhead Line - MASTER REFERENCE
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -546,88 +686,98 @@ fun EditorTimeline(
 
                 LazyRow(
                     state = listState,
-                    userScrollEnabled = draggedIndex == null && !isTrimming,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = halfScreenWidth),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    itemsIndexed(uiState.clips, key = { _, clip -> clip.id }) { index, clip ->
+                    uiState.clips.forEachIndexed { index, clip ->
                         val isBeingDragged = draggedIndex == index
 
-                        VideoClipItem(
-                            clip = clip,
-                            msPerDp = displayMsPerDp,
-                            isSelected = uiState.selectedClipId == clip.id,
-                            onClick = { onClipSelected(clip.id) },
-                            onTrim = { startMs, endMs ->
-                                isTrimming = false
-                                onTrimClip(clip.id, startMs, endMs)
-                            },
-                            onDragStart = { isTrimming = true },
-                            onDragHandle = { previewTrimMs ->
-                                var timeMs = 0L
-                                for (c in uiState.clips) {
-                                    if (c.id == clip.id) break
-                                    timeMs += c.durationMs
-                                }
-                                val offsetFromStartOfClip = previewTrimMs - clip.trimStartMs
-                                onSeek(timeMs + offsetFromStartOfClip)
-                            },
-                            modifier = Modifier
-                                .zIndex(if (isBeingDragged) 100f else 1f)
-                                .offset {
-                                    if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0)
-                                    else IntOffset.Zero
-                                }
-                                .scale(if (isBeingDragged) 0.85f else 1f)
-                                .alpha(if (draggedIndex != null && !isBeingDragged) 0.6f else 1f)
-                                .pointerInput(uiState.clips) {
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = { offset ->
-                                            draggedIndex = index
-                                            dragOffset = 0f
-                                        },
-                                        onDragEnd = {
-                                            val finalDragOffsetDp = with(density) { dragOffset.toDp() }.value
-                                            var targetIndex = index
-                                            var accumulatedOffset = 0f
+                        item(key = clip.id) {
+                            VideoClipItem(
+                                clip = clip,
+                                msPerDp = displayMsPerDp,
+                                isSelected = uiState.selectedClipId == clip.id,
+                                onClick = { onClipSelected(clip.id) },
+                                onTrim = { startMs, endMs ->
+                                    isTrimming = false
+                                    onTrimClip(clip.id, startMs, endMs)
+                                },
+                                onDragStart = { isTrimming = true },
+                                onDragHandle = { previewTrimMs ->
+                                    var timeMs = 0L
+                                    for (c in uiState.clips) {
+                                        if (c.id == clip.id) break
+                                        timeMs += c.durationMs
+                                    }
+                                    val offsetFromStartOfClip = (previewTrimMs - clip.trimStartMs)
+                                    onSeek(timeMs + offsetFromStartOfClip)
+                                },
+                                modifier = Modifier
+                                    .zIndex(if (isBeingDragged) 100f else 1f)
+                                    .offset {
+                                        if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0)
+                                        else IntOffset.Zero
+                                    }
+                                    .scale(if (isBeingDragged) 0.85f else 1f)
+                                    .alpha(if (draggedIndex != null && !isBeingDragged) 0.6f else 1f)
+                                    .pointerInput(uiState.clips) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = { _ ->
+                                                draggedIndex = index
+                                                dragOffset = 0f
+                                            },
+                                            onDragEnd = {
+                                                val finalDragOffsetDp = with(density) { dragOffset.toDp() }.value
+                                                var targetIndex = index
+                                                var accumulatedOffset = 0f
 
-                                            if (finalDragOffsetDp > 0) {
-                                                for (i in index + 1 until uiState.clips.size) {
-                                                    val nextClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
-                                                    if (finalDragOffsetDp > accumulatedOffset + (nextClipWidth / 2)) {
-                                                        targetIndex = i
-                                                        accumulatedOffset += nextClipWidth
-                                                    } else break
+                                                if (finalDragOffsetDp > 0) {
+                                                    for (i in index + 1 until uiState.clips.size) {
+                                                        val nextClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
+                                                        if (finalDragOffsetDp > accumulatedOffset + (nextClipWidth / 2)) {
+                                                            targetIndex = i
+                                                            accumulatedOffset += nextClipWidth
+                                                        } else break
+                                                    }
+                                                } else if (finalDragOffsetDp < 0) {
+                                                    val absOffset = -finalDragOffsetDp
+                                                    for (i in index - 1 downTo 0) {
+                                                        val prevClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
+                                                        if (absOffset > accumulatedOffset + (prevClipWidth / 2)) {
+                                                            targetIndex = i
+                                                            accumulatedOffset += prevClipWidth
+                                                        } else break
+                                                    }
                                                 }
-                                            } else if (finalDragOffsetDp < 0) {
-                                                var absOffset = -finalDragOffsetDp
-                                                for (i in index - 1 downTo 0) {
-                                                    val prevClipWidth = (uiState.clips[i].durationMs / displayMsPerDp)
-                                                    if (absOffset > accumulatedOffset + (prevClipWidth / 2)) {
-                                                        targetIndex = i
-                                                        accumulatedOffset += prevClipWidth
-                                                    } else break
-                                                }
-                                            }
 
-                                            if (targetIndex != index) {
-                                                onMoveClip(index, targetIndex)
+                                                if (targetIndex != index) {
+                                                    onMoveClip(index, targetIndex)
+                                                }
+                                                draggedIndex = null
+                                                dragOffset = 0f
+                                            },
+                                            onDragCancel = {
+                                                draggedIndex = null
+                                                dragOffset = 0f
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                dragOffset += dragAmount.x
                                             }
-                                            draggedIndex = null
-                                            dragOffset = 0f
-                                        },
-                                        onDragCancel = {
-                                            draggedIndex = null
-                                            dragOffset = 0f
-                                        },
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            dragOffset += dragAmount.x
-                                        }
-                                    )
-                                }
-                        )
+                                        )
+                                    }
+                            )
+                        }
+
+                        if (index < uiState.clips.size - 1) {
+                            item(key = "trans_${clip.id}") {
+                                TransitionButton(
+                                    type = clip.transitionAfter?.type ?: TransitionType.NONE,
+                                    onClick = { onTransitionClick(clip.id) }
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -654,6 +804,55 @@ fun EditorTimeline(
                         Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Zoom Out")
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun TransitionButton(
+    type: TransitionType,
+    onClick: () -> Unit
+) {
+    val isActive = type != TransitionType.NONE
+    Box(
+        modifier = Modifier
+            .width(20.dp)
+            .fillMaxHeight(),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 28.dp, height = 22.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(if (isActive) Color(0xFF80DEEA) else Color(0xFF2A2A2A))
+                .clickable { onClick() }
+                .then(if (!isActive) Modifier.border(1.dp, Color.Gray.copy(0.3f), RoundedCornerShape(6.dp)) else Modifier),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isActive) {
+                Canvas(modifier = Modifier.size(14.dp, 10.dp)) {
+                    val w = size.width
+                    val h = size.height
+                    val path = Path().apply {
+                        moveTo(0f, 0f)
+                        lineTo(w / 2f, h / 2f)
+                        lineTo(0f, h)
+                        close()
+                        moveTo(w, 0f)
+                        lineTo(w / 2f, h / 2f)
+                        lineTo(w, h)
+                        close()
+                    }
+                    drawPath(path, Color.Black)
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(12.dp)
+                        .background(Color.Gray.copy(0.5f))
+                )
             }
         }
     }
@@ -747,7 +946,7 @@ fun VideoClipItem(
 ) {
     val density = LocalDensity.current
 
-    // REAL-TIME RIPPLE: State driven by local drag to ensure responsiveness
+    // REAL-TIME RIPPLE
     var tempTrimStartMs by remember(clip.id, clip.trimStartMs) { mutableLongStateOf(clip.trimStartMs) }
     var tempTrimEndMs by remember(clip.id, clip.trimEndMs) { mutableLongStateOf(clip.trimEndMs) }
 
@@ -755,23 +954,17 @@ fun VideoClipItem(
     var initialTrimEnd by remember { mutableLongStateOf(0L) }
     var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
 
-    // Filmora-like Ripple: The layout width updates immediately as you drag
     val effectiveDuration = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
-
-    // Width logic with placeholder for loading state
     val baseWidthMs = if (effectiveDuration <= 100L && clip.originalDurationMs == 0L) 3000L else effectiveDuration
     val layoutWidth = (baseWidthMs.toFloat() / msPerDp).dp
-
     val originalWidthDp = (clip.originalDurationMs.coerceAtLeast(baseWidthMs) / msPerDp).dp
 
     Box(
         modifier = modifier
-            .width(layoutWidth) // Real-time width update causes ripple in LazyRow
+            .width(layoutWidth)
             .height(64.dp)
-            .padding(horizontal = 0.5.dp)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
     ) {
-        // Content window
         Box(
             modifier = Modifier
                 .fillMaxSize()

@@ -21,6 +21,15 @@ import java.util.Locale
 import javax.inject.Inject
 import kotlin.random.Random
 
+enum class TransitionType {
+    NONE, FADE_BLACK, CROSS_DISSOLVE, BLUR
+}
+
+data class VideoTransition(
+    val type: TransitionType = TransitionType.NONE,
+    val durationMs: Long = 1000L
+)
+
 @HiltViewModel
 class HomeViewModel @Inject constructor() : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -116,7 +125,6 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     }
 
     fun updateClipDuration(uri: Uri, durationMs: Long, context: Context) {
-        // Do not save state here to avoid undoing background metadata loading
         val updatedClips = _uiState.value.clips.map {
             if (it.uri == uri) it.copy(
                 originalDurationMs = durationMs,
@@ -214,7 +222,6 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         val splitPointInClipMs = positionMs - accumulatedMs
         val absoluteSplitPointMs = clip.trimStartMs + splitPointInClipMs
         
-        // Don't split too close to edges (e.g., 100ms)
         if (splitPointInClipMs < 100L || (clip.durationMs - splitPointInClipMs) < 100L) return
 
         saveState()
@@ -245,6 +252,14 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         )
     }
 
+    fun setTransition(clipId: String, type: TransitionType) {
+        saveState()
+        val updatedClips = _uiState.value.clips.map {
+            if (it.id == clipId) it.copy(transitionAfter = VideoTransition(type)) else it
+        }
+        _uiState.value = _uiState.value.copy(clips = updatedClips)
+    }
+
     fun updateProgress(globalPositionMs: Long) {
         if (_uiState.value.currentPositionMs != globalPositionMs) {
             _uiState.value = _uiState.value.copy(
@@ -254,7 +269,19 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         }
     }
 
+    fun onPlaybackEnded() {
+        val totalDur = _uiState.value.totalDurationMs
+        _uiState.value = _uiState.value.copy(
+            isPlaying = false,
+            currentPositionMs = totalDur,
+            currentTime = formatTime(totalDur)
+        )
+    }
+
     fun onPlayPauseClicked() {
+        if (!_uiState.value.isPlaying && _uiState.value.currentPositionMs >= _uiState.value.totalDurationMs) {
+            _uiState.value = _uiState.value.copy(currentPositionMs = 0, currentTime = "00:00.00")
+        }
         _uiState.value = _uiState.value.copy(isPlaying = !_uiState.value.isPlaying)
     }
 
@@ -310,7 +337,8 @@ data class VideoClip(
     val trimEndMs: Long = 0L,
     val color: Color,
     val uri: Uri? = null,
-    val thumbnails: List<Bitmap> = emptyList()
+    val thumbnails: List<Bitmap> = emptyList(),
+    val transitionAfter: VideoTransition? = null
 ) {
     val durationMs: Long get() = (trimEndMs - trimStartMs).coerceAtLeast(0L)
 }
