@@ -228,6 +228,7 @@ fun Home(
                 exoPlayer.seekTo(targetIndex, targetPosition.coerceAtLeast(0))
             }
         },
+        onPause = { viewModel.pause() },
         onZoom = { factor -> viewModel.updateZoom(factor) },
         onZoomIn = { viewModel.zoomIn() },
         onZoomOut = { viewModel.zoomOut() },
@@ -282,6 +283,7 @@ fun EditorScreenContent(
     onClipSelected: (String?) -> Unit,
     onMoveClip: (Int, Int) -> Unit,
     onSeek: (Long) -> Unit,
+    onPause: () -> Unit,
     onZoom: (Float) -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
@@ -332,6 +334,7 @@ fun EditorScreenContent(
                 onClipSelected = onClipSelected,
                 onMoveClip = onMoveClip,
                 onSeek = onSeek,
+                onPause = onPause,
                 onZoom = onZoom,
                 onZoomIn = onZoomIn,
                 onZoomOut = onZoomOut,
@@ -570,6 +573,7 @@ fun EditorTimeline(
     onClipSelected: (String?) -> Unit,
     onMoveClip: (Int, Int) -> Unit,
     onSeek: (Long) -> Unit,
+    onPause: () -> Unit,
     onZoom: (Float) -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
@@ -596,6 +600,12 @@ fun EditorTimeline(
         animationSpec = tween(durationMillis = 300),
         label = "dragZoom"
     )
+
+    LaunchedEffect(isDragged) {
+        if (isDragged) {
+            onPause()
+        }
+    }
 
     LaunchedEffect(isDragged, displayMsPerDp) {
         if (isDragged && draggedIndex == null) {

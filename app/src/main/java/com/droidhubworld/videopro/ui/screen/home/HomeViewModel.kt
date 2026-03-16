@@ -289,6 +289,10 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         }
     }
 
+    fun pause() {
+        _uiState.update { it.copy(isPlaying = false) }
+    }
+
     fun updateZoom(zoomFactor: Float) {
         val newMsPerDp = (_uiState.value.msPerDp / zoomFactor).coerceIn(0.5f, 200f)
         _uiState.value = _uiState.value.copy(msPerDp = newMsPerDp)
