@@ -181,6 +181,19 @@ fun Home(
         }
     }
 
+    if (uiState.isExporting) {
+        ExportProgressDialog(progress = uiState.exportProgress)
+    }
+
+    if (uiState.showExportDialog) {
+        ExportQualityDialog(
+            onDismiss = { viewModel.showExportDialog(false) },
+            onQualitySelected = { quality ->
+                viewModel.exportVideo(context, quality)
+            }
+        )
+    }
+
     if (showTransitionDialog != null) {
         TransitionSelectorDialog(
             onDismiss = { showTransitionDialog = null },
@@ -196,6 +209,7 @@ fun Home(
         exoPlayer = exoPlayer,
         version = version,
         onAddVideoClick = { videoPickerLauncher.launch("video/*") },
+        onExportClick = { viewModel.showExportDialog(true) },
         onPlayPauseClick = { viewModel.onPlayPauseClicked() },
         onUndoClick = { viewModel.undo() },
         onRedoClick = { viewModel.redo() },
@@ -228,7 +242,7 @@ fun Home(
         onZoomIn = { viewModel.zoomIn() },
         onZoomOut = { viewModel.zoomOut() },
         onTrimClip = { _, startMs, endMs ->
-            viewModel.trimSelectedClip(startMs, endMs, context)
+            viewModel.trimSelectedClip(startMs, endMs)
         },
         onTransitionClick = { clipId -> showTransitionDialog = clipId },
         modifier = modifier
@@ -265,11 +279,75 @@ fun TransitionSelectorDialog(
 }
 
 @Composable
+fun ExportQualityDialog(
+    onDismiss: () -> Unit,
+    onQualitySelected: (ExportQuality) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFF1A1A1A)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Export Quality", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(16.dp))
+                ExportQuality.entries.forEach { quality ->
+                    Button(
+                        onClick = { onQualitySelected(quality) },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        val label = when(quality) {
+                            ExportQuality.P480 -> "480P (SD)"
+                            ExportQuality.P720 -> "720P (HD)"
+                            ExportQuality.P1080 -> "1080P (Full HD)"
+                        }
+                        Text(label, color = Color.White)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ExportProgressDialog(progress: Float) {
+    Dialog(onDismissRequest = {}) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = Color(0xFF1A1A1A)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(
+                    progress = { progress },
+                    color = Color.Green,
+                    modifier = Modifier.size(64.dp)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Exporting... ${(progress * 100).toInt()}%", color = Color.White, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+@Composable
 fun EditorScreenContent(
     uiState: HomeUiState,
     exoPlayer: ExoPlayer,
     version: String,
     onAddVideoClick: () -> Unit,
+    onExportClick: () -> Unit,
     onPlayPauseClick: () -> Unit,
     onUndoClick: () -> Unit,
     onRedoClick: () -> Unit,
@@ -288,7 +366,7 @@ fun EditorScreenContent(
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        topBar = { EditorTopBar(onAddVideoClick = onAddVideoClick) },
+        topBar = { EditorTopBar(onAddVideoClick = onAddVideoClick, onExportClick = onExportClick) },
         bottomBar = {
             EditorBottomBar(
                 isClipSelected = uiState.selectedClipId != null,
@@ -475,7 +553,7 @@ fun EditorIconButton(
 }
 
 @Composable
-fun EditorTopBar(onAddVideoClick: () -> Unit) {
+fun EditorTopBar(onAddVideoClick: () -> Unit, onExportClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -506,7 +584,7 @@ fun EditorTopBar(onAddVideoClick: () -> Unit) {
                 )
             }
             Button(
-                onClick = { },
+                onClick = onExportClick,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
                 shape = RoundedCornerShape(4.dp),

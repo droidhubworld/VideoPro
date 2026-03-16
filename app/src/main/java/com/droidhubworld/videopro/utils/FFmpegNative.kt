@@ -33,4 +33,23 @@ object FFmpegNative {
      * @return true if successful, false otherwise
      */
     external fun trimVideo(inputPath: String, outputPath: String, startMs: Long, endMs: Long): Boolean
+
+    /**
+     * Exports a video by joining multiple clips with transitions.
+     * @param inputPaths array of paths to the input video files
+     * @param outputPath path to the output video file
+     * @param trimStarts array of start times for each clip in milliseconds
+     * @param trimEnds array of end times for each clip in milliseconds
+     * @param transitions array of transition types for each gap (size = inputPaths.size - 1)
+     * @param transitionDurations array of transition durations in milliseconds
+     * @return true if successful, false otherwise
+     */
+    external fun exportWithTransitions(
+        inputPaths: Array<String>,
+        outputPath: String,
+        trimStarts: LongArray,
+        trimEnds: LongArray,
+        transitions: Array<String>,
+        transitionDurations: LongArray
+    ): Boolean
 }

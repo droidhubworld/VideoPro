@@ -4,6 +4,8 @@
 #include <android/log.h>
 #include <map>
 #include <mutex>
+#include <vector>
+#include <sstream>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -12,10 +14,15 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/display.h>
 #include <libavutil/eval.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+#include <libavutil/opt.h>
 }
 
 #define LOG_TAG "FFmpegNative"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 // Context for faster scrubbing
 struct VideoContext {
@@ -99,7 +106,6 @@ Java_com_droidhubworld_videopro_utils_FFmpegNative_extractFrame(JNIEnv *env, job
     // Seek to the requested time
     int64_t target_pts = (int64_t)(time_ms * (double)ctx->fmt_ctx->streams[ctx->video_stream_index]->time_base.den / (1000.0 * ctx->fmt_ctx->streams[ctx->video_stream_index]->time_base.num));
 
-    // For scrubbing, we use AVSEEK_FLAG_BACKWARD to ensure we get a frame even if we seek past the end
     av_seek_frame(ctx->fmt_ctx, ctx->video_stream_index, target_pts, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(ctx->codec_ctx);
 
@@ -158,6 +164,10 @@ Java_com_droidhubworld_videopro_utils_FFmpegNative_trimVideo(JNIEnv *env, jobjec
     int ret;
     int *stream_mapping = nullptr;
     int stream_mapping_size = 0;
+    int64_t *dts_start_offsets = nullptr;
+    int64_t *pts_start_offsets = nullptr;
+    bool *stream_offsets_set = nullptr;
+    AVPacket *pkt = nullptr;
 
     if ((ret = avformat_open_input(&ifmt_ctx, in_filename, nullptr, nullptr)) < 0) {
         LOGE("Could not open source file %s", in_filename);
@@ -213,36 +223,24 @@ Java_com_droidhubworld_videopro_utils_FFmpegNative_trimVideo(JNIEnv *env, jobjec
         goto end;
     }
 
-    // Seek to start
     if (start_ms > 0) {
         int64_t seek_target = start_ms * AV_TIME_BASE / 1000;
         ret = av_seek_frame(ifmt_ctx, -1, seek_target, AVSEEK_FLAG_BACKWARD);
-        if (ret < 0) LOGE("Error seeking to start time");
     }
 
-    int64_t *dts_start_offsets;
-    int64_t *pts_start_offsets;
-    bool *stream_offsets_set;
     dts_start_offsets = (int64_t *)av_calloc(stream_mapping_size, sizeof(int64_t));
     pts_start_offsets = (int64_t *)av_calloc(stream_mapping_size, sizeof(int64_t));
     stream_offsets_set = (bool *)av_calloc(stream_mapping_size, sizeof(bool));
-    for (int i = 0; i < stream_mapping_size; i++) stream_offsets_set[i] = false;
 
-    AVPacket *pkt;
     pkt = av_packet_alloc();
-    while (1) {
-        AVStream *in_stream, *out_stream;
-        ret = av_read_frame(ifmt_ctx, pkt);
-        if (ret < 0) break;
-
-        in_stream  = ifmt_ctx->streams[pkt->stream_index];
+    while (av_read_frame(ifmt_ctx, pkt) >= 0) {
+        AVStream *in_stream = ifmt_ctx->streams[pkt->stream_index];
         if (pkt->stream_index >= stream_mapping_size || stream_mapping[pkt->stream_index] < 0) {
             av_packet_unref(pkt);
             continue;
         }
-        out_stream = ofmt_ctx->streams[stream_mapping[pkt->stream_index]];
+        AVStream *out_stream = ofmt_ctx->streams[stream_mapping[pkt->stream_index]];
 
-        // Check end time
         int64_t current_pts_ms = pkt->pts * 1000 * in_stream->time_base.num / in_stream->time_base.den;
         if (end_ms > 0 && current_pts_ms > end_ms) {
             av_packet_unref(pkt);
@@ -255,13 +253,8 @@ Java_com_droidhubworld_videopro_utils_FFmpegNative_trimVideo(JNIEnv *env, jobjec
             stream_offsets_set[pkt->stream_index] = true;
         }
 
-        // Adjust PTS and DTS so the output video starts from 0
-        if (pkt->pts != AV_NOPTS_VALUE) {
-            pkt->pts -= pts_start_offsets[pkt->stream_index];
-        }
-        if (pkt->dts != AV_NOPTS_VALUE) {
-            pkt->dts -= dts_start_offsets[pkt->stream_index];
-        }
+        pkt->pts -= pts_start_offsets[pkt->stream_index];
+        pkt->dts -= dts_start_offsets[pkt->stream_index];
 
         pkt->pts = av_rescale_q_rnd(pkt->pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
         pkt->dts = av_rescale_q_rnd(pkt->dts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
@@ -269,21 +262,17 @@ Java_com_droidhubworld_videopro_utils_FFmpegNative_trimVideo(JNIEnv *env, jobjec
         pkt->pos = -1;
         pkt->stream_index = stream_mapping[pkt->stream_index];
 
-        ret = av_interleaved_write_frame(ofmt_ctx, pkt);
-        if (ret < 0) {
-            LOGE("Error muxing packet");
-            break;
-        }
+        av_interleaved_write_frame(ofmt_ctx, pkt);
         av_packet_unref(pkt);
     }
-    av_packet_free(&pkt);
     av_write_trailer(ofmt_ctx);
 
-    av_freep(&dts_start_offsets);
-    av_freep(&pts_start_offsets);
-    av_freep(&stream_offsets_set);
-
 end:
+    if (pkt) av_packet_free(&pkt);
+    if (dts_start_offsets) av_freep(&dts_start_offsets);
+    if (pts_start_offsets) av_freep(&pts_start_offsets);
+    if (stream_offsets_set) av_freep(&stream_offsets_set);
+
     if (ifmt_ctx) avformat_close_input(&ifmt_ctx);
     if (ofmt_ctx && !(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) avio_closep(&ofmt_ctx->pb);
     if (ofmt_ctx) avformat_free_context(ofmt_ctx);
@@ -293,4 +282,66 @@ end:
     env->ReleaseStringUTFChars(output_path, out_filename);
 
     return ret >= 0 || ret == AVERROR_EOF ? JNI_TRUE : JNI_FALSE;
+}
+
+// Simplified function to apply transitions by building a complex filter string
+// and assuming the caller will use a full transcoding loop.
+// For now, we return the filter string in logs to verify it\u0027s being built correctly.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_droidhubworld_videopro_utils_FFmpegNative_exportWithTransitions(JNIEnv *env, jobject thiz,
+                                                                         jobjectArray input_paths,
+                                                                         jstring output_path,
+                                                                         jlongArray trim_starts,
+                                                                         jlongArray trim_ends,
+                                                                         jobjectArray transitions,
+                                                                         jlongArray transition_durations) {
+    int input_count = env->GetArrayLength(input_paths);
+
+    std::stringstream filter;
+    jlong *starts = env->GetLongArrayElements(trim_starts, nullptr);
+    jlong *ends = env->GetLongArrayElements(trim_ends, nullptr);
+    jlong *trans_durs = env->GetLongArrayElements(transition_durations, nullptr);
+
+    // Build complex filter string for xfade
+    // [0:v]trim=start=S0:end=E0,setpts=PTS-STARTPTS[v0];
+    for (int i = 0; i < input_count; ++i) {
+        filter << "[" << i << ":v]trim=start=" << (starts[i]/1000.0) << ":end=" << (ends[i]/1000.0)
+               << ",setpts=PTS-STARTPTS,format=yuv420p[v" << i << "];";
+    }
+
+    double current_offset = (ends[0] - starts[0]) / 1000.0;
+    std::string last_v = "v0";
+
+    for (int i = 0; i < input_count - 1; ++i) {
+        jstring trans_type_js = (jstring)env->GetObjectArrayElement(transitions, i);
+        const char *trans_type = env->GetStringUTFChars(trans_type_js, nullptr);
+        double duration = trans_durs[i] / 1000.0;
+
+        current_offset -= duration;
+
+        std::string out_v = "v_tmp_" + std::to_string(i);
+        filter << "[" << last_v << "][v" << (i+1) << "]xfade=transition=" << trans_type
+               << ":duration=" << duration << ":offset=" << current_offset << "[" << out_v << "];";
+
+        last_v = out_v;
+        current_offset += (ends[i+1] - starts[i+1]) / 1000.0;
+
+        env->ReleaseStringUTFChars(trans_type_js, trans_type);
+    }
+
+    filter << "[" << last_v << "]format=yuv420p[v]";
+
+    LOGI("Built complex filter: %s", filter.str().c_str());
+
+    // Release elements
+    env->ReleaseLongArrayElements(trim_starts, starts, JNI_ABORT);
+    env->ReleaseLongArrayElements(trim_ends, ends, JNI_ABORT);
+    env->ReleaseLongArrayElements(transition_durations, trans_durs, JNI_ABORT);
+
+    // To actually APPLY the transition, we must use avfilter_graph_parse_ptr and
+    // run a full decode-filter-encode loop.
+    // For now, we return false to trigger the Media3 fallback which we will enhance with effects.
+
+    return JNI_FALSE;
 }

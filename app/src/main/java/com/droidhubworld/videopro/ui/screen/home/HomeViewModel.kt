@@ -2,15 +2,38 @@ package com.droidhubworld.videopro.ui.screen.home
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
+import androidx.annotation.OptIn
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.Effect
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.ConvolutionFunction1D
+import androidx.media3.effect.GaussianFunction
+import androidx.media3.effect.MatrixTransformation
+import androidx.media3.effect.RgbMatrix
+import androidx.media3.effect.SeparableConvolution
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import com.droidhubworld.videopro.utils.FFmpegNative
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,7 +46,11 @@ import javax.inject.Inject
 import kotlin.random.Random
 
 enum class TransitionType {
-    NONE, FADE_BLACK, CROSS_DISSOLVE, BLUR
+    NONE, FADE_BLACK, CROSS_DISSOLVE, BLUR, ZOOM
+}
+
+enum class ExportQuality {
+    P480, P720, P1080
 }
 
 data class VideoTransition(
@@ -100,7 +127,6 @@ class HomeViewModel @Inject constructor() : ViewModel() {
             clips = _uiState.value.clips + newClips
         )
 
-        // Load data for new clips immediately
         uris.forEach { uri ->
             loadClipData(uri, context)
         }
@@ -145,7 +171,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val path = getRealPathFromURI(context, uri) ?: return@launch
             val thumbnails = mutableListOf<Bitmap>()
-            val interval = 1000L // 1 second
+            val interval = 1000L
             val count = (durationMs / interval).toInt().coerceAtMost(10).coerceAtLeast(1)
             val step = if (count > 1) durationMs / (count - 1) else 0
 
@@ -181,7 +207,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         _uiState.value = _uiState.value.copy(selectedClipId = id)
     }
 
-    fun trimSelectedClip(startMs: Long, endMs: Long, context: Context) {
+    fun trimSelectedClip(startMs: Long, endMs: Long) {
         val selectedId = _uiState.value.selectedClipId ?: return
         
         saveState()
@@ -202,7 +228,6 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     }
 
     fun splitSelectedClip() {
-        val selectedId = _uiState.value.selectedClipId ?: return
         val positionMs = _uiState.value.currentPositionMs
         val currentClips = _uiState.value.clips
         
@@ -227,8 +252,16 @@ class HomeViewModel @Inject constructor() : ViewModel() {
 
         saveState()
         
-        val firstPart = clip.copy(id = System.currentTimeMillis().toString() + "_1", trimEndMs = absoluteSplitPointMs)
-        val secondPart = clip.copy(id = (System.currentTimeMillis() + 1).toString() + "_2", trimStartMs = absoluteSplitPointMs)
+        // Remove transitionBetween parts when splitting a clip
+        val firstPart = clip.copy(
+            id = System.currentTimeMillis().toString() + "_1", 
+            trimEndMs = absoluteSplitPointMs,
+            transitionAfter = null
+        )
+        val secondPart = clip.copy(
+            id = (System.currentTimeMillis() + 1).toString() + "_2", 
+            trimStartMs = absoluteSplitPointMs
+        )
         
         val newList = currentClips.toMutableList()
         newList.removeAt(targetClipIndex)
@@ -315,12 +348,249 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         _uiState.value = _uiState.value.copy(clips = newList)
     }
 
+    fun showExportDialog(show: Boolean) {
+        _uiState.update { it.copy(showExportDialog = show) }
+    }
+
+    @OptIn(UnstableApi::class)
+    fun exportVideo(context: Context, quality: ExportQuality) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isExporting = true, exportProgress = 0f, showExportDialog = false) }
+            
+            val clips = _uiState.value.clips
+            if (clips.isEmpty()) {
+                _uiState.update { it.copy(isExporting = false) }
+                return@launch
+            }
+
+            val downloadFolder = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val videoProFolder = File(downloadFolder, "VideoPro")
+            if (!videoProFolder.exists()) {
+                videoProFolder.mkdirs()
+            }
+            
+            val outputFile = File(videoProFolder, "export_${System.currentTimeMillis()}.mp4")
+            
+            val inputPaths = clips.mapNotNull { it.uri?.let { uri -> getRealPathFromURI(context, uri) } }.toTypedArray()
+            val trimStarts = clips.map { it.trimStartMs }.toLongArray()
+            val trimEnds = clips.map { it.trimEndMs }.toLongArray()
+            val transitions = clips.dropLast(1).map { it.transitionAfter?.type?.name?.lowercase() ?: "none" }.toTypedArray()
+            val transitionDurations = clips.dropLast(1).map { it.transitionAfter?.durationMs ?: 0L }.toLongArray()
+
+            val success = withContext(Dispatchers.IO) {
+                FFmpegNative.exportWithTransitions(
+                    inputPaths,
+                    outputFile.absolutePath,
+                    trimStarts,
+                    trimEnds,
+                    transitions,
+                    transitionDurations
+                )
+            }
+
+            if (success) {
+                _uiState.update { it.copy(isExporting = false, exportProgress = 1f) }
+                viewModelScope.launch {
+                    delay(1000)
+                    _uiState.update { it.copy(exportProgress = 0f) }
+                }
+            } else {
+                Log.e("HomeViewModel", "FFmpeg native xfade is not fully implemented in C++, falling back to Media3 Transformer with Effects")
+                exportVideoWithTransformer(context, quality, outputFile)
+            }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private suspend fun exportVideoWithTransformer(context: Context, quality: ExportQuality, outputFile: File) {
+        val clips = _uiState.value.clips
+        val transformer = Transformer.Builder(context)
+            .setVideoMimeType(MimeTypes.VIDEO_H264)
+            .build()
+
+        var currentTotalDurationUs = 0L
+        val editedMediaItems = clips.mapIndexedNotNull { index, clip ->
+            clip.uri?.let { uri ->
+                val clipDurationUs = clip.durationMs * 1000
+                val mediaItem = MediaItem.Builder()
+                    .setUri(uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(clip.trimStartMs)
+                            .setEndPositionMs(clip.trimEndMs)
+                            .build()
+                    )
+                    .build()
+                
+                val videoEffects = mutableListOf<Effect>()
+                
+                // Transition In from previous clip's transition
+                val prevClip = if (index > 0) clips[index - 1] else null
+                if (prevClip?.transitionAfter != null && prevClip.transitionAfter.type != TransitionType.NONE) {
+                    val durationUs = prevClip.transitionAfter.durationMs * 1000 / 2
+                    val startTime = currentTotalDurationUs
+                    val endTime = currentTotalDurationUs + durationUs
+                    
+                    when (prevClip.transitionAfter.type) {
+                        TransitionType.FADE_BLACK, TransitionType.CROSS_DISSOLVE -> {
+                            videoEffects.add(FadeRgbMatrix(startTime, endTime, true))
+                        }
+                        TransitionType.ZOOM -> {
+                            videoEffects.add(FadeRgbMatrix(startTime, endTime, true))
+                            videoEffects.add(ZoomMatrixTransformation(startTime, endTime, true))
+                        }
+                        TransitionType.BLUR -> {
+                            videoEffects.add(DynamicGaussianBlur(startTime, endTime, true))
+                        }
+                        else -> {}
+                    }
+                }
+                
+                // Transition Out for this clip's transition
+                if (clip.transitionAfter != null && clip.transitionAfter.type != TransitionType.NONE) {
+                    val durationUs = clip.transitionAfter.durationMs * 1000 / 2
+                    val fadeOutStartUs = currentTotalDurationUs + clipDurationUs - durationUs
+                    val fadeOutEndUs = currentTotalDurationUs + clipDurationUs
+                    
+                    when (clip.transitionAfter.type) {
+                        TransitionType.FADE_BLACK, TransitionType.CROSS_DISSOLVE -> {
+                            videoEffects.add(FadeRgbMatrix(fadeOutStartUs, fadeOutEndUs, false))
+                        }
+                        TransitionType.ZOOM -> {
+                            videoEffects.add(FadeRgbMatrix(fadeOutStartUs, fadeOutEndUs, false))
+                            videoEffects.add(ZoomMatrixTransformation(fadeOutStartUs, fadeOutEndUs, false))
+                        }
+                        TransitionType.BLUR -> {
+                            videoEffects.add(DynamicGaussianBlur(fadeOutStartUs, fadeOutEndUs, false))
+                        }
+                        else -> {}
+                    }
+                }
+
+                currentTotalDurationUs += clipDurationUs
+
+                EditedMediaItem.Builder(mediaItem)
+                    .setEffects(Effects(emptyList<AudioProcessor>(), videoEffects))
+                    .build()
+            }
+        }
+
+        val composition = Composition.Builder(
+            listOf(EditedMediaItemSequence.Builder(editedMediaItems).build())
+        ).build()
+
+        transformer.addListener(object : Transformer.Listener {
+            override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                _uiState.update { it.copy(isExporting = false, exportProgress = 1f) }
+                viewModelScope.launch {
+                    delay(1000)
+                    _uiState.update { it.copy(exportProgress = 0f) }
+                }
+            }
+
+            override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                Log.e("HomeViewModel", "Transformer Export failed", exportException)
+                _uiState.update { it.copy(isExporting = false) }
+            }
+        })
+
+        try {
+            transformer.start(composition, outputFile.absolutePath)
+            while (_uiState.value.isExporting) {
+                val progressHolder = ProgressHolder()
+                val state = transformer.getProgress(progressHolder)
+                if (state != Transformer.PROGRESS_STATE_NOT_STARTED) {
+                    _uiState.update { it.copy(exportProgress = progressHolder.progress / 100f) }
+                }
+                delay(500)
+            }
+        } catch (e: Exception) {
+            Log.e("HomeViewModel", "Failed to start transformer export", e)
+            _uiState.update { it.copy(isExporting = false) }
+        }
+    }
+
     private fun formatTime(ms: Long): String {
         val totalSeconds = ms / 1000
         val seconds = totalSeconds % 60
         val minutes = (totalSeconds / 60) % 60
         val milliseconds = (ms % 1000) / 10
         return String.format(Locale.getDefault(), "%02d:%02d.%02d", minutes, seconds, milliseconds)
+    }
+}
+
+@UnstableApi
+private class FadeRgbMatrix(
+    private val startTimeUs: Long,
+    private val endTimeUs: Long,
+    private val fadeIn: Boolean
+) : RgbMatrix {
+    override fun getMatrix(presentationTimeUs: Long, useHdr: Boolean): FloatArray {
+        val durationUs = endTimeUs - startTimeUs
+        
+        // If the current frame is completely outside the transition window, return standard identity or black
+        if (durationUs <= 0) return floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f)
+
+        // Calculate progress based on global or local timestamp. coerceIn handles both.
+        val progress = ((presentationTimeUs - startTimeUs).toFloat() / durationUs).coerceIn(0f, 1f)
+        
+        val scale = if (fadeIn) progress else 1f - progress
+
+        return floatArrayOf(
+            scale, 0f, 0f, 0f,
+            0f, scale, 0f, 0f,
+            0f, 0f, scale, 0f,
+            0f, 0f, 0f, 1f
+        )
+    }
+}
+
+@UnstableApi
+private class ZoomMatrixTransformation(
+    private val startTimeUs: Long,
+    private val endTimeUs: Long,
+    private val isIncoming: Boolean
+) : MatrixTransformation {
+    override fun getMatrix(presentationTimeUs: Long): Matrix {
+        val matrix = Matrix()
+        if (presentationTimeUs < startTimeUs || presentationTimeUs > endTimeUs) {
+            return matrix
+        }
+        val durationUs = endTimeUs - startTimeUs
+        if (durationUs <= 0) return matrix
+
+        val progress = ((presentationTimeUs - startTimeUs).toFloat() / durationUs).coerceIn(0f, 1f)
+        
+        val scale = if (isIncoming) {
+            0.7f + (0.3f * progress)
+        } else {
+            1.0f + (0.3f * progress)
+        }
+
+        matrix.postScale(scale, scale, 0f, 0f)
+        return matrix
+    }
+}
+
+@UnstableApi
+private class DynamicGaussianBlur(
+    private val startTimeUs: Long,
+    private val endTimeUs: Long,
+    private val isIncoming: Boolean
+) : SeparableConvolution() {
+    override fun getConvolution(presentationTimeUs: Long): ConvolutionFunction1D {
+        val durationUs = endTimeUs - startTimeUs
+        if (durationUs <= 0 || presentationTimeUs < startTimeUs || presentationTimeUs > endTimeUs) {
+            return GaussianFunction(0.1f, 2.0f)
+        }
+        val progress = ((presentationTimeUs - startTimeUs).toFloat() / durationUs).coerceIn(0f, 1f)
+        val maxSigma = 20f
+        val currentSigma = if (isIncoming) {
+            maxSigma * (1f - progress)
+        } else {
+            maxSigma * progress
+        }
+        return GaussianFunction(currentSigma.coerceAtLeast(0.1f), 2.0f)
     }
 }
 
@@ -332,9 +602,12 @@ data class HomeUiState(
     val totalDurationMs: Long = 0,
     val isPlaying: Boolean = false,
     val selectedClipId: String? = null,
-    val msPerDp: Float = 10f, // Default zoom level: 1dp = 10ms
+    val msPerDp: Float = 10f,
     val canUndo: Boolean = false,
-    val canRedo: Boolean = false
+    val canRedo: Boolean = false,
+    val isExporting: Boolean = false,
+    val exportProgress: Float = 0f,
+    val showExportDialog: Boolean = false
 )
 
 data class VideoClip(
