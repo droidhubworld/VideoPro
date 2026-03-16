@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -773,9 +774,22 @@ fun EditorTimeline(
 
                         if (index < uiState.clips.size - 1) {
                             item(key = "trans_${clip.id}") {
+                                val isLeftSelected = uiState.selectedClipId == clip.id
+                                val isRightSelected = uiState.selectedClipId == uiState.clips.getOrNull(index + 1)?.id
+                                
+                                val transitionOffset by animateDpAsState(
+                                    targetValue = when {
+                                        isLeftSelected -> 28.dp
+                                        isRightSelected -> (-28).dp
+                                        else -> 0.dp
+                                    },
+                                    label = "transitionOffset"
+                                )
+
                                 TransitionButton(
                                     type = clip.transitionAfter?.type ?: TransitionType.NONE,
-                                    onClick = { onTransitionClick(clip.id) }
+                                    onClick = { onTransitionClick(clip.id) },
+                                    modifier = Modifier.offset(x = transitionOffset)
                                 )
                             }
                         }
@@ -813,11 +827,12 @@ fun EditorTimeline(
 @Composable
 fun TransitionButton(
     type: TransitionType,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val isActive = type != TransitionType.NONE
     Box(
-        modifier = Modifier
+        modifier = modifier
             .layout { measurable, constraints ->
                 val placeable = measurable.measure(constraints)
                 // Report 0 width to parent but center the actual content
