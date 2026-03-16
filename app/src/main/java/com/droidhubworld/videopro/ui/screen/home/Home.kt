@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -817,42 +818,40 @@ fun TransitionButton(
     val isActive = type != TransitionType.NONE
     Box(
         modifier = Modifier
-            .width(20.dp)
-            .fillMaxHeight(),
+            .layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints)
+                // Report 0 width to parent but center the actual content
+                layout(0, placeable.height) {
+                    placeable.placeRelative(-placeable.width / 2, 0)
+                }
+            }
+            .fillMaxHeight()
+            .zIndex(20f),
         contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
                 .size(width = 28.dp, height = 22.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(if (isActive) Color(0xFF80DEEA) else Color(0xFF2A2A2A))
+                .background(if (isActive) Color(0xFF80DEEA) else Color(0xFFFFFFFF))
                 .clickable { onClick() }
-                .then(if (!isActive) Modifier.border(1.dp, Color.Gray.copy(0.3f), RoundedCornerShape(6.dp)) else Modifier),
+                .then(if (!isActive) Modifier.border(1.dp, Color.White, RoundedCornerShape(6.dp)) else Modifier),
             contentAlignment = Alignment.Center
         ) {
-            if (isActive) {
-                Canvas(modifier = Modifier.size(14.dp, 10.dp)) {
-                    val w = size.width
-                    val h = size.height
-                    val path = Path().apply {
-                        moveTo(0f, 0f)
-                        lineTo(w / 2f, h / 2f)
-                        lineTo(0f, h)
-                        close()
-                        moveTo(w, 0f)
-                        lineTo(w / 2f, h / 2f)
-                        lineTo(w, h)
-                        close()
-                    }
-                    drawPath(path, Color.Black)
+            Canvas(modifier = Modifier.size(14.dp, 10.dp)) {
+                val w = size.width
+                val h = size.height
+                val path = Path().apply {
+                    moveTo(0f, 0f)
+                    lineTo(w / 2f, h / 2f)
+                    lineTo(0f, h)
+                    close()
+                    moveTo(w, 0f)
+                    lineTo(w / 2f, h / 2f)
+                    lineTo(w, h)
+                    close()
                 }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(12.dp)
-                        .background(Color.Gray.copy(0.5f))
-                )
+                drawPath(path, Color.Black)
             }
         }
     }
