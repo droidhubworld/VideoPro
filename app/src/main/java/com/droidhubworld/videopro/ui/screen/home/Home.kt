@@ -14,10 +14,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
@@ -968,6 +970,8 @@ fun VideoClipItem(
     var initialTrimEnd by remember { mutableLongStateOf(0L) }
     var dragAccumulatorPx by remember { mutableFloatStateOf(0f) }
 
+    var isHandlePressed by remember { mutableStateOf(false) }
+
     val effectiveDuration = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
     val baseWidthMs = if (effectiveDuration <= 100L && clip.originalDurationMs == 0L) 3000L else effectiveDuration
     val layoutWidth = (baseWidthMs.toFloat() / msPerDp).dp
@@ -1003,15 +1007,26 @@ fun VideoClipItem(
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
 
             if (isSelected) {
+                // The selection border (2dp white) serves as the "line" when dragging
                 Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
 
                 // Left Handle
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
-                        .width(24.dp)
+                        .width(if (isHandlePressed) 40.dp else 16.dp)
                         .fillMaxHeight()
-                        .background(Color.White)
+                        .background(if (isHandlePressed) Color.Transparent else Color.White)
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitFirstDown()
+                                    isHandlePressed = true
+                                    waitForUpOrCancellation()
+                                    isHandlePressed = false
+                                }
+                            }
+                        }
                         .draggable(
                             orientation = Orientation.Horizontal,
                             state = rememberDraggableState { delta ->
@@ -1021,24 +1036,40 @@ fun VideoClipItem(
                                 onDragHandle(tempTrimStartMs)
                             },
                             onDragStarted = {
+                                isHandlePressed = true
                                 initialTrimStart = tempTrimStartMs
                                 dragAccumulatorPx = 0f
                                 onDragStart()
                             },
                             onDragStopped = {
+                                isHandlePressed = false
                                 onTrim(tempTrimStartMs, tempTrimEndMs)
                             }
                         ),
                     contentAlignment = Alignment.Center
-                ) { Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
+                ) { 
+                    if (!isHandlePressed) {
+                        Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) 
+                    }
+                }
 
                 // Right Handle
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
-                        .width(24.dp)
+                        .width(if (isHandlePressed) 40.dp else 16.dp)
                         .fillMaxHeight()
-                        .background(Color.White)
+                        .background(if (isHandlePressed) Color.Transparent else Color.White)
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitFirstDown()
+                                    isHandlePressed = true
+                                    waitForUpOrCancellation()
+                                    isHandlePressed = false
+                                }
+                            }
+                        }
                         .draggable(
                             orientation = Orientation.Horizontal,
                             state = rememberDraggableState { delta ->
@@ -1048,16 +1079,22 @@ fun VideoClipItem(
                                 onDragHandle(tempTrimEndMs)
                             },
                             onDragStarted = {
+                                isHandlePressed = true
                                 initialTrimEnd = tempTrimEndMs
                                 dragAccumulatorPx = 0f
                                 onDragStart()
                             },
                             onDragStopped = {
+                                isHandlePressed = false
                                 onTrim(tempTrimStartMs, tempTrimEndMs)
                             }
                         ),
                     contentAlignment = Alignment.Center
-                ) { Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
+                ) { 
+                    if (!isHandlePressed) {
+                        Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) 
+                    }
+                }
             }
         }
     }
