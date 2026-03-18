@@ -63,8 +63,8 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
-    private val undoStack = mutableListOf<List<VideoClip>>()
-    private val redoStack = mutableListOf<List<VideoClip>>()
+    private val undoStack = mutableListOf<Pair<List<VideoClip>, List<AudioClip>>>()
+    private val redoStack = mutableListOf<Pair<List<VideoClip>, List<AudioClip>>>()
 
     private val colors = listOf(
         Color(0xFF42A5F5), Color(0xFF66BB6A), Color(0xFFFFA726),
@@ -72,7 +72,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     )
 
     private fun saveState() {
-        undoStack.add(_uiState.value.clips)
+        undoStack.add(_uiState.value.clips to _uiState.value.audioClips)
         if (undoStack.size > 20) {
             undoStack.removeAt(0)
         }
@@ -83,29 +83,36 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         )
     }
 
+    private fun calculateTotalDuration(clips: List<VideoClip>, audioClips: List<AudioClip>): Long {
+        val videoDuration = clips.sumOf { it.durationMs }
+        val audioMaxEnd = audioClips.maxOfOrNull { it.startOffsetMs + it.durationMs } ?: 0L
+        return maxOf(videoDuration, audioMaxEnd)
+    }
+
+    private fun updateStateWithDuration(clips: List<VideoClip> = _uiState.value.clips, audioClips: List<AudioClip> = _uiState.value.audioClips) {
+        val totalDuration = calculateTotalDuration(clips, audioClips)
+        _uiState.value = _uiState.value.copy(
+            clips = clips,
+            audioClips = audioClips,
+            totalDurationMs = totalDuration,
+            canUndo = undoStack.isNotEmpty(),
+            canRedo = redoStack.isNotEmpty()
+        )
+    }
+
     fun undo() {
         if (undoStack.isNotEmpty()) {
-            redoStack.add(_uiState.value.clips)
+            redoStack.add(_uiState.value.clips to _uiState.value.audioClips)
             val previousState = undoStack.removeAt(undoStack.lastIndex)
-            _uiState.value = _uiState.value.copy(
-                clips = previousState,
-                totalDurationMs = previousState.sumOf { it.durationMs },
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty()
-            )
+            updateStateWithDuration(previousState.first, previousState.second)
         }
     }
 
     fun redo() {
         if (redoStack.isNotEmpty()) {
-            undoStack.add(_uiState.value.clips)
+            undoStack.add(_uiState.value.clips to _uiState.value.audioClips)
             val nextState = redoStack.removeAt(redoStack.lastIndex)
-            _uiState.value = _uiState.value.copy(
-                clips = nextState,
-                totalDurationMs = nextState.sumOf { it.durationMs },
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty()
-            )
+            updateStateWithDuration(nextState.first, nextState.second)
         }
     }
 
@@ -123,9 +130,8 @@ class HomeViewModel @Inject constructor() : ViewModel() {
                 uri = uri
             )
         }
-        _uiState.value = _uiState.value.copy(
-            clips = _uiState.value.clips + newClips
-        )
+        val updatedClips = _uiState.value.clips + newClips
+        updateStateWithDuration(clips = updatedClips)
 
         uris.forEach { uri ->
             loadClipData(uri, context)
@@ -158,13 +164,60 @@ class HomeViewModel @Inject constructor() : ViewModel() {
                 trimEndMs = durationMs
             ) else it
         }
-        val totalDuration = updatedClips.sumOf { it.durationMs }
-        _uiState.value = _uiState.value.copy(
-            clips = updatedClips,
-            totalDurationMs = totalDuration
-        )
-
+        updateStateWithDuration(clips = updatedClips)
         generateThumbnails(uri, durationMs, context)
+    }
+
+    fun addAudio(uri: Uri, context: Context) {
+        addAudios(listOf(uri), context)
+    }
+
+    fun addAudios(uris: List<Uri>, context: Context) {
+        saveState()
+        val newAudioClips = uris.mapIndexed { index, uri ->
+            AudioClip(
+                id = "audio_" + System.currentTimeMillis().toString() + index,
+                name = "Audio ${(_uiState.value.audioClips.size + index + 1)}",
+                color = colors[Random.nextInt(colors.size)],
+                uri = uri,
+                startOffsetMs = _uiState.value.currentPositionMs
+            )
+        }
+        val updatedAudioClips = _uiState.value.audioClips + newAudioClips
+        updateStateWithDuration(audioClips = updatedAudioClips)
+
+        uris.forEach { uri ->
+            loadAudioData(uri, context)
+        }
+    }
+
+    private fun loadAudioData(uri: Uri, context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(context, uri)
+                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                val durationMs = durationStr?.toLong() ?: 0L
+
+                withContext(Dispatchers.Main) {
+                    updateAudioDuration(uri, durationMs)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                retriever.release()
+            }
+        }
+    }
+
+    private fun updateAudioDuration(uri: Uri, durationMs: Long) {
+        val updatedAudioClips = _uiState.value.audioClips.map {
+            if (it.uri == uri) it.copy(
+                originalDurationMs = durationMs,
+                trimEndMs = durationMs
+            ) else it
+        }
+        updateStateWithDuration(audioClips = updatedAudioClips)
     }
 
     private fun generateThumbnails(uri: Uri, durationMs: Long, context: Context) {
@@ -204,14 +257,16 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     }
 
     fun selectClip(id: String?) {
-        _uiState.value = _uiState.value.copy(selectedClipId = id)
+        _uiState.value = _uiState.value.copy(selectedClipId = id, selectedAudioClipId = null)
+    }
+
+    fun selectAudioClip(id: String?) {
+        _uiState.value = _uiState.value.copy(selectedAudioClipId = id, selectedClipId = null)
     }
 
     fun trimSelectedClip(startMs: Long, endMs: Long) {
         val selectedId = _uiState.value.selectedClipId ?: return
-        
         saveState()
-
         val updatedClips = _uiState.value.clips.map {
             if (it.id == selectedId) {
                 it.copy(
@@ -220,11 +275,29 @@ class HomeViewModel @Inject constructor() : ViewModel() {
                 )
             } else it
         }
-        
-        _uiState.value = _uiState.value.copy(
-            clips = updatedClips,
-            totalDurationMs = updatedClips.sumOf { it.durationMs }
-        )
+        updateStateWithDuration(clips = updatedClips)
+    }
+
+    fun trimSelectedAudioClip(startMs: Long, endMs: Long) {
+        val selectedId = _uiState.value.selectedAudioClipId ?: return
+        saveState()
+        val updatedAudioClips = _uiState.value.audioClips.map {
+            if (it.id == selectedId) {
+                it.copy(
+                    trimStartMs = startMs.coerceAtLeast(0L),
+                    trimEndMs = endMs.coerceAtMost(it.originalDurationMs)
+                )
+            } else it
+        }
+        updateStateWithDuration(audioClips = updatedAudioClips)
+    }
+
+    fun moveAudioClip(id: String, newOffsetMs: Long) {
+        saveState()
+        val updatedAudioClips = _uiState.value.audioClips.map {
+            if (it.id == id) it.copy(startOffsetMs = newOffsetMs.coerceAtLeast(0L)) else it
+        }
+        updateStateWithDuration(audioClips = updatedAudioClips)
     }
 
     fun splitSelectedClip() {
@@ -252,7 +325,6 @@ class HomeViewModel @Inject constructor() : ViewModel() {
 
         saveState()
         
-        // Remove transitionBetween parts when splitting a clip
         val firstPart = clip.copy(
             id = System.currentTimeMillis().toString() + "_1", 
             trimEndMs = absoluteSplitPointMs,
@@ -268,22 +340,36 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         newList.add(targetClipIndex, firstPart)
         newList.add(targetClipIndex + 1, secondPart)
         
-        _uiState.value = _uiState.value.copy(
-            clips = newList,
-            totalDurationMs = newList.sumOf { it.durationMs },
-            selectedClipId = secondPart.id
-        )
+        updateStateWithDuration(clips = newList)
+        _uiState.value = _uiState.value.copy(selectedClipId = secondPart.id)
     }
 
     fun deleteSelectedClip() {
+        val selectedId = _uiState.value.selectedClipId
+        val selectedAudioId = _uiState.value.selectedAudioClipId
+        
+        if (selectedId != null) {
+            saveState()
+            val newList = _uiState.value.clips.filter { it.id != selectedId }
+            updateStateWithDuration(clips = newList)
+            _uiState.value = _uiState.value.copy(selectedClipId = null)
+        } else if (selectedAudioId != null) {
+            saveState()
+            val newList = _uiState.value.audioClips.filter { it.id != selectedAudioId }
+            updateStateWithDuration(audioClips = newList)
+            _uiState.value = _uiState.value.copy(selectedAudioClipId = null)
+        }
+    }
+
+    fun toggleMuteSelectedClip() {
         val selectedId = _uiState.value.selectedClipId ?: return
         saveState()
-        val newList = _uiState.value.clips.filter { it.id != selectedId }
-        _uiState.value = _uiState.value.copy(
-            clips = newList,
-            totalDurationMs = newList.sumOf { it.durationMs },
-            selectedClipId = null
-        )
+        val updatedClips = _uiState.value.clips.map {
+            if (it.id == selectedId) {
+                it.copy(isMuted = !it.isMuted)
+            } else it
+        }
+        updateStateWithDuration(clips = updatedClips)
     }
 
     fun setTransition(clipId: String, type: TransitionType) {
@@ -291,7 +377,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         val updatedClips = _uiState.value.clips.map {
             if (it.id == clipId) it.copy(transitionAfter = VideoTransition(type)) else it
         }
-        _uiState.value = _uiState.value.copy(clips = updatedClips)
+        updateStateWithDuration(clips = updatedClips)
     }
 
     fun updateProgress(globalPositionMs: Long) {
@@ -345,7 +431,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         val newList = _uiState.value.clips.toMutableList()
         val clip = newList.removeAt(fromIndex)
         newList.add(toIndex, clip)
-        _uiState.value = _uiState.value.copy(clips = newList)
+        updateStateWithDuration(clips = newList)
     }
 
     fun showExportDialog(show: Boolean) {
@@ -596,12 +682,14 @@ private class DynamicGaussianBlur(
 
 data class HomeUiState(
     val clips: List<VideoClip> = emptyList(),
+    val audioClips: List<AudioClip> = emptyList(),
     val isLoading: Boolean = false,
     val currentTime: String = "00:00.00",
     val currentPositionMs: Long = 0,
     val totalDurationMs: Long = 0,
     val isPlaying: Boolean = false,
     val selectedClipId: String? = null,
+    val selectedAudioClipId: String? = null,
     val msPerDp: Float = 10f,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
@@ -619,7 +707,22 @@ data class VideoClip(
     val color: Color,
     val uri: Uri? = null,
     val thumbnails: List<Bitmap> = emptyList(),
-    val transitionAfter: VideoTransition? = null
+    val transitionAfter: VideoTransition? = null,
+    val isMuted: Boolean = false
+) {
+    val durationMs: Long get() = (trimEndMs - trimStartMs).coerceAtLeast(0L)
+}
+
+data class AudioClip(
+    val id: String,
+    val name: String,
+    val originalDurationMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val color: Color,
+    val uri: Uri? = null,
+    val volume: Float = 1.0f,
+    val startOffsetMs: Long = 0L
 ) {
     val durationMs: Long get() = (trimEndMs - trimStartMs).coerceAtLeast(0L)
 }
