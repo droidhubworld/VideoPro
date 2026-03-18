@@ -37,7 +37,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -45,6 +47,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -371,7 +374,8 @@ fun EditorScreenContent(
         bottomBar = {
             val selectedClip = uiState.clips.find { it.id == uiState.selectedClipId }
             EditorBottomBar(
-                isClipSelected = uiState.selectedClipId != null || uiState.selectedAudioClipId != null,
+                isVideoClipSelected = uiState.selectedClipId != null,
+                isAudioClipSelected = uiState.selectedAudioClipId != null,
                 selectedClipIsMuted = selectedClip?.isMuted ?: false,
                 onSplitClick = onSplitClick,
                 onDeleteClick = onDeleteClick,
@@ -535,7 +539,7 @@ fun EditorTimeline(
                                     },
                                     modifier = Modifier
                                         .zIndex(if (isBeingDragged) 100f else 1f)
-                                        .offset { if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0) else IntOffset.Zero }
+                                        .offset { if (isBeingDragged) IntOffset(dragOffset.roundToInt(), -20) else IntOffset.Zero }
                                         .scale(if (isBeingDragged) 0.85f else 1f)
                                         .alpha(if (draggedIndex != null && !isBeingDragged) 0.6f else 1f)
                                         .pointerInput(uiState.clips) {
@@ -591,7 +595,7 @@ fun EditorTimeline(
                                                 modifier = Modifier
                                                     .offset(x = (audioRelOffsetMs.toFloat() / displayMsPerDp).dp)
                                                     .zIndex(if (isAudioBeingDragged) 100f else 1f)
-                                                    .offset { if (isAudioBeingDragged) IntOffset(audioDragOffset.roundToInt(), 0) else IntOffset.Zero }
+                                                    .offset { if (isAudioBeingDragged) IntOffset(audioDragOffset.roundToInt(), -20) else IntOffset.Zero }
                                                     .scale(if (isAudioBeingDragged) 0.85f else 1f)
                                                     .alpha(if (draggedAudioId != null && !isAudioBeingDragged) 0.6f else 1f)
                                                     .pointerInput(audio.id) {
@@ -768,7 +772,7 @@ fun VideoClipItem(
             }
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
             if (clip.isMuted) {
-                Icon(Icons.Default.Clear, contentDescription = "Muted", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp))
+                Icon(painter = painterResource(id = R.drawable.ic_audio_muted), contentDescription = "Muted", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp))
             }
             if (isSelected) {
                 Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
@@ -824,7 +828,8 @@ fun TransitionButton(type: TransitionType, onClick: () -> Unit, modifier: Modifi
 
 @Composable
 fun EditorBottomBar(
-    isClipSelected: Boolean, 
+    isVideoClipSelected: Boolean,
+    isAudioClipSelected: Boolean,
     selectedClipIsMuted: Boolean,
     onSplitClick: () -> Unit, 
     onDeleteClick: () -> Unit, 
@@ -832,27 +837,29 @@ fun EditorBottomBar(
     onMuteToggleClick: () -> Unit
 ) {
     Row(modifier = Modifier.fillMaxWidth().navigationBarsPadding().background(Color(0xFF1A1A1A)).padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-        BottomBarItem(Icons.Default.Build, "Split", onClick = onSplitClick)
-        BottomBarItem(Icons.Default.Menu, "Audio", onClick = onAddAudioClick)
-        if (isClipSelected) {
-            BottomBarItem(Icons.Default.KeyboardArrowUp, "Speed")
-            BottomBarItem(
-                if (selectedClipIsMuted) Icons.Default.Notifications else Icons.Default.Warning,
-                if (selectedClipIsMuted) "Unmute" else "Mute", 
-                onClick = onMuteToggleClick
-            )
-            BottomBarItem(Icons.Default.Delete, "Delete", onClick = onDeleteClick)
+        BottomBarItem(rememberVectorPainter(Icons.Default.Build), "Split", onClick = onSplitClick)
+        BottomBarItem(rememberVectorPainter(Icons.Default.Menu), "Audio", onClick = onAddAudioClick)
+        if (isVideoClipSelected || isAudioClipSelected) {
+            if (isVideoClipSelected) {
+                BottomBarItem(rememberVectorPainter(Icons.Default.KeyboardArrowUp), "Speed")
+                BottomBarItem(
+                    painterResource(if (selectedClipIsMuted) R.drawable.ic_audio else R.drawable.ic_audio_muted),
+                    if (selectedClipIsMuted) "Unmute" else "Mute", 
+                    onClick = onMuteToggleClick
+                )
+            }
+            BottomBarItem(rememberVectorPainter(Icons.Default.Delete), "Delete", onClick = onDeleteClick)
         } else {
-            BottomBarItem(Icons.Default.Edit, "Edit")
-            BottomBarItem(Icons.Default.Add, "Text")
-            BottomBarItem(Icons.Default.Delete, "Delete", onClick = onDeleteClick)
+            BottomBarItem(rememberVectorPainter(Icons.Default.Edit), "Edit")
+            BottomBarItem(rememberVectorPainter(Icons.Default.Add), "Text")
+            BottomBarItem(rememberVectorPainter(Icons.Default.Delete), "Delete", onClick = onDeleteClick)
         }
     }
 }
 
 @Composable
-fun BottomBarItem(icon: ImageVector, label: String, onClick: () -> Unit = {}) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(8.dp).clickable { onClick() }) { Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(24.dp)); Spacer(modifier = Modifier.height(4.dp)); Text(label, color = Color.White, fontSize = 10.sp) }
+fun BottomBarItem(painter: Painter, label: String, onClick: () -> Unit = {}) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(8.dp).clickable { onClick() }) { Icon(painter, contentDescription = label, tint = Color.White, modifier = Modifier.size(24.dp)); Spacer(modifier = Modifier.height(4.dp)); Text(label, color = Color.White, fontSize = 10.sp) }
 }
 
 @Composable
