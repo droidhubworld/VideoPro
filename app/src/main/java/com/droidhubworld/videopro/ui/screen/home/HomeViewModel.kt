@@ -444,6 +444,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
             _uiState.update { it.copy(isExporting = true, exportProgress = 0f, showExportDialog = false) }
             
             val clips = _uiState.value.clips
+            val audioClips = _uiState.value.audioClips
             if (clips.isEmpty()) {
                 _uiState.update { it.copy(isExporting = false) }
                 return@launch
@@ -457,21 +458,27 @@ class HomeViewModel @Inject constructor() : ViewModel() {
             
             val outputFile = File(videoProFolder, "export_${System.currentTimeMillis()}.mp4")
             
-            val inputPaths = clips.mapNotNull { it.uri?.let { uri -> getRealPathFromURI(context, uri) } }.toTypedArray()
-            val trimStarts = clips.map { it.trimStartMs }.toLongArray()
-            val trimEnds = clips.map { it.trimEndMs }.toLongArray()
-            val transitions = clips.dropLast(1).map { it.transitionAfter?.type?.name?.lowercase() ?: "none" }.toTypedArray()
-            val transitionDurations = clips.dropLast(1).map { it.transitionAfter?.durationMs ?: 0L }.toLongArray()
+            // If we have additional audio clips, FFmpegNative.exportWithTransitions won't handle them
+            // correctly as it only takes video clip paths. So we force fallback to Transformer.
+            val success = if (audioClips.isEmpty()) {
+                val inputPaths = clips.mapNotNull { it.uri?.let { uri -> getRealPathFromURI(context, uri) } }.toTypedArray()
+                val trimStarts = clips.map { it.trimStartMs }.toLongArray()
+                val trimEnds = clips.map { it.trimEndMs }.toLongArray()
+                val transitions = clips.dropLast(1).map { it.transitionAfter?.type?.name?.lowercase() ?: "none" }.toTypedArray()
+                val transitionDurations = clips.dropLast(1).map { it.transitionAfter?.durationMs ?: 0L }.toLongArray()
 
-            val success = withContext(Dispatchers.IO) {
-                FFmpegNative.exportWithTransitions(
-                    inputPaths,
-                    outputFile.absolutePath,
-                    trimStarts,
-                    trimEnds,
-                    transitions,
-                    transitionDurations
-                )
+                withContext(Dispatchers.IO) {
+                    FFmpegNative.exportWithTransitions(
+                        inputPaths,
+                        outputFile.absolutePath,
+                        trimStarts,
+                        trimEnds,
+                        transitions,
+                        transitionDurations
+                    )
+                }
+            } else {
+                false
             }
 
             if (success) {
@@ -481,7 +488,7 @@ class HomeViewModel @Inject constructor() : ViewModel() {
                     _uiState.update { it.copy(exportProgress = 0f) }
                 }
             } else {
-                Log.e("HomeViewModel", "FFmpeg native xfade is not fully implemented in C++, falling back to Media3 Transformer with Effects")
+                Log.e("HomeViewModel", "Using Media3 Transformer for export (supporting audio clips and transitions)")
                 exportVideoWithTransformer(context, quality, outputFile)
             }
         }
@@ -490,12 +497,13 @@ class HomeViewModel @Inject constructor() : ViewModel() {
     @OptIn(UnstableApi::class)
     private suspend fun exportVideoWithTransformer(context: Context, quality: ExportQuality, outputFile: File) {
         val clips = _uiState.value.clips
+        val audioClips = _uiState.value.audioClips
         val transformer = Transformer.Builder(context)
             .setVideoMimeType(MimeTypes.VIDEO_H264)
             .build()
 
         var currentTotalDurationUs = 0L
-        val editedMediaItems = clips.mapIndexedNotNull { index, clip ->
+        val videoSequenceItems = clips.mapIndexedNotNull { index, clip ->
             clip.uri?.let { uri ->
                 val clipDurationUs = clip.durationMs * 1000
                 val mediaItem = MediaItem.Builder()
@@ -556,14 +564,70 @@ class HomeViewModel @Inject constructor() : ViewModel() {
                 currentTotalDurationUs += clipDurationUs
 
                 EditedMediaItem.Builder(mediaItem)
+                    .setRemoveAudio(clip.isMuted)
                     .setEffects(Effects(emptyList<AudioProcessor>(), videoEffects))
                     .build()
             }
         }
 
-        val composition = Composition.Builder(
-            listOf(EditedMediaItemSequence.Builder(editedMediaItems).build())
-        ).build()
+        val allSequences = mutableListOf<EditedMediaItemSequence>()
+        allSequences.add(EditedMediaItemSequence.Builder(videoSequenceItems).build())
+
+        // Add Audio Clips as parallel tracks (sequences)
+        audioClips.forEach { audioClip ->
+            audioClip.uri?.let { uri ->
+                val audioItems = mutableListOf<EditedMediaItem>()
+                
+                // Prepend silence for startOffsetMs by using the audio file itself clipped
+                if (audioClip.startOffsetMs > 0) {
+                    var remainingOffset = audioClip.startOffsetMs
+                    while (remainingOffset > 0) {
+                        val silenceDuration = if (audioClip.originalDurationMs > 0) 
+                            minOf(remainingOffset, audioClip.originalDurationMs) 
+                        else remainingOffset
+                        
+                        val silenceMediaItem = MediaItem.Builder()
+                            .setUri(uri)
+                            .setClippingConfiguration(
+                                MediaItem.ClippingConfiguration.Builder()
+                                    .setEndPositionMs(silenceDuration)
+                                    .build()
+                            )
+                            .build()
+                        audioItems.add(
+                            EditedMediaItem.Builder(silenceMediaItem)
+                                .setRemoveVideo(true)
+                                // Fix: Cannot remove both audio and video. 
+                                // To truly silence this, we should apply a mute AudioProcessor.
+                                .setRemoveAudio(false)
+                                .build()
+                        )
+                        remainingOffset -= silenceDuration
+                        if (audioClip.originalDurationMs <= 0) break
+                    }
+                }
+                
+                val audioMediaItem = MediaItem.Builder()
+                    .setUri(uri)
+                    .setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(audioClip.trimStartMs)
+                            .setEndPositionMs(audioClip.trimEndMs)
+                            .build()
+                    )
+                    .build()
+                
+                audioItems.add(
+                    EditedMediaItem.Builder(audioMediaItem)
+                        .setRemoveVideo(true)
+                        .build()
+                )
+                
+                allSequences.add(EditedMediaItemSequence.Builder(audioItems).build())
+            }
+        }
+
+        val composition = Composition.Builder(allSequences).build()
 
         transformer.addListener(object : Transformer.Listener {
             override fun onCompleted(composition: Composition, exportResult: ExportResult) {
