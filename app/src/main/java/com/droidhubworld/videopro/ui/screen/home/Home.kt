@@ -443,7 +443,8 @@ fun EditorTimeline(
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var draggedAudioId by remember { mutableStateOf<String?>(null) }
     var audioDragOffset by remember { mutableFloatStateOf(0f) }
-    val displayMsPerDp by animateFloatAsState(targetValue = if (draggedIndex != null) 150f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
+    // Reduced zoom target (120f) to avoid large horizontal jumps on long press
+    val displayMsPerDp by animateFloatAsState(targetValue = if (draggedIndex != null || draggedAudioId != null) 120f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
 
     LaunchedEffect(isDragged) { if (isDragged) onPause() }
 
@@ -461,7 +462,8 @@ fun EditorTimeline(
     }
 
     LaunchedEffect(uiState.currentPositionMs, displayMsPerDp, isTrimming, draggedIndex, draggedAudioId) {
-        if (!isDragged && !isTrimming && draggedIndex == null && draggedAudioId == null) {
+        // Keep timeline playhead centered during zoom changes, even while dragging
+        if (!isDragged && !isTrimming) {
             var accumulatedMs = 0L
             var itemIndex = -1
             var offsetMs = 0L
@@ -565,7 +567,6 @@ fun EditorTimeline(
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 // Render Audio Clips that intersect with this video clip's timeframe
-                                // Use 0-width layout to avoid pushing video clips apart (gaps)
                                 Box(modifier = Modifier.layout { measurable, constraints -> 
                                     val placeable = measurable.measure(constraints)
                                     layout(0, placeable.height) { placeable.placeRelative(0, 0) }
@@ -582,6 +583,7 @@ fun EditorTimeline(
                                                 audio = audio,
                                                 msPerDp = displayMsPerDp,
                                                 isSelected = uiState.selectedAudioClipId == audio.id,
+                                                isDragging = isAudioBeingDragged,
                                                 onClick = { onAudioSelected(audio.id) },
                                                 onTrim = { start, end -> onTrimAudio(audio.id, start, end) },
                                                 onDragStart = { isTrimming = true },
@@ -590,7 +592,7 @@ fun EditorTimeline(
                                                     .offset(x = (audioRelOffsetMs.toFloat() / displayMsPerDp).dp)
                                                     .zIndex(if (isAudioBeingDragged) 100f else 1f)
                                                     .offset { if (isAudioBeingDragged) IntOffset(audioDragOffset.roundToInt(), 0) else IntOffset.Zero }
-                                                    .scale(if (isAudioBeingDragged) 0.9f else 1f)
+                                                    .scale(if (isAudioBeingDragged) 0.85f else 1f)
                                                     .alpha(if (draggedAudioId != null && !isAudioBeingDragged) 0.6f else 1f)
                                                     .pointerInput(audio.id) {
                                                         detectDragGesturesAfterLongPress(
@@ -639,6 +641,7 @@ fun AudioClipItem(
     audio: AudioClip,
     msPerDp: Float,
     isSelected: Boolean,
+    isDragging: Boolean,
     onClick: () -> Unit,
     onTrim: (Long, Long) -> Unit,
     onDragStart: () -> Unit = {},
@@ -678,7 +681,8 @@ fun AudioClipItem(
             fontWeight = FontWeight.Bold, 
             modifier = Modifier.padding(start = 4.dp, top = 2.dp)
         )
-        if (isSelected) {
+        // Only show handles if selected AND NOT currently being dragged
+        if (isSelected && !isDragging) {
             // Left Trim Handle
             Box(
                 modifier = Modifier
