@@ -283,9 +283,11 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         saveState()
         val updatedAudioClips = _uiState.value.audioClips.map {
             if (it.id == selectedId) {
+                val diffStart = startMs - it.trimStartMs
                 it.copy(
                     trimStartMs = startMs.coerceAtLeast(0L),
-                    trimEndMs = endMs.coerceAtMost(it.originalDurationMs)
+                    trimEndMs = endMs.coerceAtMost(it.originalDurationMs),
+                    startOffsetMs = it.startOffsetMs + diffStart
                 )
             } else it
         }

@@ -452,9 +452,10 @@ fun EditorTimeline(
     var draggedAudioId by remember { mutableStateOf<String?>(null) }
     var audioDragOffset by remember { mutableFloatStateOf(0f) }
     var lastSnappedMs by remember { mutableLongStateOf(-1L) }
+    var dragStartOffsetMs by remember { mutableLongStateOf(0L) }
     
-    // Reduced zoom target (120f) to avoid large horizontal jumps on long press
-    val displayMsPerDp by animateFloatAsState(targetValue = if (draggedIndex != null || draggedAudioId != null) 120f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
+    // Zoom out (120f) only when dragging video clips, not audio clips
+    val displayMsPerDp by animateFloatAsState(targetValue = if (draggedIndex != null) 120f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
 
     LaunchedEffect(isDragged) { if (isDragged) onPause() }
 
@@ -545,7 +546,7 @@ fun EditorTimeline(
                                     },
                                     modifier = Modifier
                                         .zIndex(if (isBeingDragged) 100f else 1f)
-                                        .offset { if (isBeingDragged) IntOffset(dragOffset.roundToInt(), -20) else IntOffset.Zero }
+                                        .offset { if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0) else IntOffset.Zero }
                                         .scale(if (isBeingDragged) 0.85f else 1f)
                                         .alpha(if (draggedIndex != null && !isBeingDragged) 0.6f else 1f)
                                         .pointerInput(uiState.clips) {
@@ -592,7 +593,7 @@ fun EditorTimeline(
                                             
                                             // Handle snapping logic for visual offset
                                             val currentDragOffsetMs = if (isAudioBeingDragged) (audioDragOffset / density.density * displayMsPerDp).toLong() else 0L
-                                            val tentativePosMs = audio.startOffsetMs + currentDragOffsetMs
+                                            val tentativePosMs = (if (isAudioBeingDragged) dragStartOffsetMs else audio.startOffsetMs) + currentDragOffsetMs
                                             val tentativeEndMs = tentativePosMs + audio.durationMs
                                             
                                             var finalVisualOffsetMs = currentDragOffsetMs
@@ -646,13 +647,13 @@ fun EditorTimeline(
                                                 modifier = Modifier
                                                     .offset(x = ((audioRelOffsetMs + finalVisualOffsetMs).toFloat() / displayMsPerDp).dp)
                                                     .zIndex(if (isAudioBeingDragged) 100f else 1f)
-                                                    .offset { if (isAudioBeingDragged) IntOffset(0, -20) else IntOffset.Zero }
-                                                    .scale(if (isAudioBeingDragged) 0.85f else 1f)
+                                                    .offset { if (isAudioBeingDragged) IntOffset(0, 0) else IntOffset.Zero }
                                                     .alpha(if (draggedAudioId != null && !isAudioBeingDragged) 0.6f else 1f)
-                                                    .pointerInput(audio.id) {
+                                                    .pointerInput(audio, displayMsPerDp, density.density) {
                                                         detectDragGesturesAfterLongPress(
                                                             onDragStart = { 
                                                                 draggedAudioId = audio.id
+                                                                dragStartOffsetMs = audio.startOffsetMs
                                                                 audioDragOffset = 0f
                                                                 lastSnappedMs = -1L
                                                                 onPause()
@@ -662,8 +663,9 @@ fun EditorTimeline(
                                                                 audioDragOffset += dragAmount.x
                                                             },
                                                             onDragEnd = {
+                                                                val dragMs = (audioDragOffset / density.density * displayMsPerDp).toLong()
                                                                 // Use the snapped position for final move if it exists
-                                                                val finalPosMs = if (lastSnappedMs != -1L) lastSnappedMs else tentativePosMs
+                                                                val finalPosMs = if (lastSnappedMs != -1L) lastSnappedMs else (dragStartOffsetMs + dragMs)
                                                                 onMoveAudio(audio.id, finalPosMs.coerceAtLeast(0L))
                                                                 draggedAudioId = null
                                                                 audioDragOffset = 0f
