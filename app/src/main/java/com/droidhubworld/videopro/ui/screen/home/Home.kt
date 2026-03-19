@@ -647,7 +647,6 @@ fun EditorTimeline(
                                                 modifier = Modifier
                                                     .offset(x = ((audioRelOffsetMs + finalVisualOffsetMs).toFloat() / displayMsPerDp).dp)
                                                     .zIndex(if (isAudioBeingDragged) 100f else 1f)
-                                                    .offset { if (isAudioBeingDragged) IntOffset(0, 0) else IntOffset.Zero }
                                                     .alpha(if (draggedAudioId != null && !isAudioBeingDragged) 0.6f else 1f)
                                                     .pointerInput(audio, displayMsPerDp, density.density) {
                                                         detectDragGesturesAfterLongPress(
@@ -729,8 +728,8 @@ fun AudioClipItem(
             .clip(RoundedCornerShape(4.dp))
             .background(audio.color.copy(alpha = 0.6f))
             .border(
-                if (isSelected) 2.dp else 1.dp, 
-                if (isSelected) Color.White else Color.White.copy(0.3f), 
+                if (isSelected && !isDragging) 2.dp else if (isDragging) 0.dp else 1.dp, 
+                if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f),
                 RoundedCornerShape(4.dp)
             )
             .clickable { onClick() }
