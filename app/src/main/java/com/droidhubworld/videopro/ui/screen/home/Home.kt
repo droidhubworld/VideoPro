@@ -664,7 +664,7 @@ fun EditorTimeline(
                                                             onDragEnd = {
                                                                 val dragMs = (audioDragOffset / density.density * displayMsPerDp).toLong()
                                                                 // Use the snapped position for final move if it exists
-                                                                val finalPosMs = if (lastSnappedMs != -1L) lastSnappedMs else (dragStartOffsetMs + dragMs)
+                                                                val finalPosMs = if (lastSnappedMs != -1L) lastSnappedMs else (audio.startOffsetMs + dragMs)
                                                                 onMoveAudio(audio.id, finalPosMs.coerceAtLeast(0L))
                                                                 draggedAudioId = null
                                                                 audioDragOffset = 0f
@@ -729,7 +729,7 @@ fun AudioClipItem(
             .background(audio.color.copy(alpha = 0.6f))
             .border(
                 if (isSelected && !isDragging) 2.dp else if (isDragging) 0.dp else 1.dp, 
-                if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f),
+                if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f), 
                 RoundedCornerShape(4.dp)
             )
             .clickable { onClick() }
@@ -896,7 +896,6 @@ fun EditorBottomBar(
         BottomBarItem(rememberVectorPainter(Icons.Default.Build), "Split", onClick = onSplitClick)
         BottomBarItem(rememberVectorPainter(Icons.Default.Menu), "Audio", onClick = onAddAudioClick)
         if (isVideoClipSelected || isAudioClipSelected) {
-            BottomBarItem(rememberVectorPainter(Icons.Default.KeyboardArrowUp), "Speed")
             if (isVideoClipSelected) {
                 BottomBarItem(
                     painterResource(if (selectedClipIsMuted) R.drawable.ic_audio else R.drawable.ic_audio_muted),
@@ -906,8 +905,6 @@ fun EditorBottomBar(
             }
             BottomBarItem(rememberVectorPainter(Icons.Default.Delete), "Delete", onClick = onDeleteClick)
         } else {
-            BottomBarItem(rememberVectorPainter(Icons.Default.Edit), "Edit")
-            BottomBarItem(rememberVectorPainter(Icons.Default.Add), "Text")
             BottomBarItem(rememberVectorPainter(Icons.Default.Delete), "Delete", onClick = onDeleteClick)
         }
     }
@@ -920,11 +917,9 @@ fun BottomBarItem(painter: Painter, label: String, onClick: () -> Unit = {}) {
 
 @Composable
 fun EditorTopBar(onAddVideoClick: () -> Unit, onExportClick: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = { }) { Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White) }
+    Row(modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onAddVideoClick, modifier = Modifier.padding(end = 8.dp)) { Icon(Icons.Default.Add, contentDescription = "Add Video", tint = Color.White) }
-            Surface(color = Color(0xFF333333), shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(end = 12.dp)) { Text(text = "1080P", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) }
             Button(onClick = onExportClick, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp), shape = RoundedCornerShape(4.dp), modifier = Modifier.height(32.dp)) { Text("Export", fontSize = 13.sp, color = Color.White) }
         }
     }
