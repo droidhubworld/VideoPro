@@ -224,23 +224,25 @@ class HomeViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val path = getRealPathFromURI(context, uri) ?: return@launch
             val thumbnails = mutableListOf<Bitmap>()
-            val interval = 1000L
-            val count = (durationMs / interval).toInt().coerceAtMost(10).coerceAtLeast(1)
-            val step = if (count > 1) durationMs / (count - 1) else 0
+            val interval = 1000L // Generate 1 thumbnail per second
+            val count = (durationMs / interval).toInt().coerceAtLeast(1)
 
             for (i in 0 until count) {
-                val timeMs = i * step
+                val timeMs = i * interval
+                // Use a smaller bitmap to save memory
                 val bitmap = Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888)
                 if (FFmpegNative.extractFrame(path, timeMs, bitmap)) {
                     thumbnails.add(bitmap)
+                    
+                    // Update state progressively so UI reflects the loaded thumbnails
+                    withContext(Dispatchers.Main) {
+                        val currentList = thumbnails.toList()
+                        val updatedClips = _uiState.value.clips.map {
+                            if (it.uri == uri) it.copy(thumbnails = currentList) else it
+                        }
+                        _uiState.value = _uiState.value.copy(clips = updatedClips)
+                    }
                 }
-            }
-
-            withContext(Dispatchers.Main) {
-                val updatedClips = _uiState.value.clips.map {
-                    if (it.uri == uri) it.copy(thumbnails = thumbnails) else it
-                }
-                _uiState.value = _uiState.value.copy(clips = updatedClips)
             }
         }
     }

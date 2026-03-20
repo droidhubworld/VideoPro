@@ -447,6 +447,8 @@ fun EditorTimeline(
     val haptic = LocalHapticFeedback.current
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     var isTrimming by remember { mutableStateOf(false) }
+    var freezeRulerMs by remember { mutableLongStateOf(0L) }
+    var freezeRulerTime by remember { mutableStateOf("") }
     var draggedIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var draggedAudioId by remember { mutableStateOf<String?>(null) }
@@ -455,26 +457,38 @@ fun EditorTimeline(
     var dragStartOffsetMs by remember { mutableLongStateOf(0L) }
     
     // Zoom out (120f) only when dragging video clips, not audio clips
-    val displayMsPerDp by animateFloatAsState(targetValue = if (draggedIndex != null) 120f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
+    val displayMsPerDpState = animateFloatAsState(targetValue = if (draggedIndex != null) 120f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
+    val displayMsPerDp by displayMsPerDpState
+
+    val visualPositionMs by remember(uiState.clips) {
+        derivedStateOf {
+            if (uiState.clips.isEmpty()) return@derivedStateOf 0L
+            val index = listState.firstVisibleItemIndex
+            val offset = listState.firstVisibleItemScrollOffset
+            var timeMs = 0L
+            val targetClipCount = if (index % 2 == 0) (index / 2) else (index / 2 + 1)
+            for (i in 0 until targetClipCount) {
+                timeMs += uiState.clips.getOrNull(i)?.durationMs ?: 0L
+            }
+            val offsetInDp = offset / density.density
+            val offsetMs = (offsetInDp * displayMsPerDpState.value).toLong()
+            timeMs + offsetMs
+        }
+    }
 
     LaunchedEffect(isDragged) { if (isDragged) onPause() }
 
-    LaunchedEffect(isDragged, displayMsPerDp) {
+    LaunchedEffect(isDragged) {
         if (isDragged && draggedIndex == null) {
-            snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }.collect { (index, offset) ->
-                val clipIndex = index / 2
-                var timeMs = 0L
-                for (i in 0 until clipIndex) { timeMs += uiState.clips.getOrNull(i)?.durationMs ?: 0L }
-                val offsetInDp = with(density) { offset.toDp() }
-                val offsetMs = (offsetInDp.value * displayMsPerDp).toLong()
-                onSeek(timeMs + offsetMs)
+            snapshotFlow { visualPositionMs }.collect { pos ->
+                onSeek(pos)
             }
         }
     }
 
     LaunchedEffect(uiState.currentPositionMs, displayMsPerDp, isTrimming, draggedIndex, draggedAudioId) {
         // Keep timeline playhead centered during zoom changes, even while dragging
-        if (!isDragged && !isTrimming) {
+        if (!isDragged && !isTrimming && draggedIndex == null && draggedAudioId == null) {
             var accumulatedMs = 0L
             var itemIndex = -1
             var offsetMs = 0L
@@ -510,7 +524,11 @@ fun EditorTimeline(
             }
         }
     ) {
-        TimelineHeader(uiState.currentTime, uiState.currentPositionMs, displayMsPerDp)
+        TimelineHeader(
+            currentTime = if (isTrimming) freezeRulerTime else uiState.currentTime, 
+            currentPositionMs = if (isTrimming) freezeRulerMs else visualPositionMs, 
+            msPerDp = displayMsPerDp
+        )
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             if (uiState.clips.isEmpty()) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -538,7 +556,11 @@ fun EditorTimeline(
                                     isSelected = uiState.selectedClipId == clip.id,
                                     onClick = { onClipSelected(clip.id) },
                                     onTrim = { startMs, endMs -> isTrimming = false; onTrimClip(clip.id, startMs, endMs) },
-                                    onDragStart = { isTrimming = true },
+                                    onDragStart = { 
+                                        freezeRulerMs = visualPositionMs
+                                        freezeRulerTime = uiState.currentTime
+                                        isTrimming = true 
+                                    },
                                     onDragHandle = { previewTrimMs ->
                                         var timeMs = 0L
                                         for (c in uiState.clips) { if (c.id == clip.id) break; timeMs += c.durationMs }
@@ -642,7 +664,11 @@ fun EditorTimeline(
                                                 isDragging = isAudioBeingDragged,
                                                 onClick = { onAudioSelected(audio.id) },
                                                 onTrim = { start, end -> onTrimAudio(audio.id, start, end) },
-                                                onDragStart = { isTrimming = true },
+                                                onDragStart = { 
+                                                    freezeRulerMs = visualPositionMs
+                                                    freezeRulerTime = uiState.currentTime
+                                                    isTrimming = true 
+                                                },
                                                 onDragEnd = { isTrimming = false },
                                                 modifier = Modifier
                                                     .offset(x = ((audioRelOffsetMs + finalVisualOffsetMs).toFloat() / displayMsPerDp).dp)
@@ -716,83 +742,96 @@ fun AudioClipItem(
     var initialTrimStart by remember { mutableLongStateOf(0L) }
     var initialTrimEnd by remember { mutableLongStateOf(0L) }
 
+    val committedDur = (audio.trimEndMs - audio.trimStartMs).coerceAtLeast(100L)
+    val outerLayoutWidth = (committedDur.toFloat() / msPerDp).dp
+
     val effectiveDur = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
-    val layoutWidth = (effectiveDur.toFloat() / msPerDp).dp
-    val visualOffsetPx = with(density) { ((tempTrimStartMs - audio.trimStartMs).toFloat() / msPerDp).dp.roundToPx() }
+    val innerWidth = (effectiveDur.toFloat() / msPerDp).dp
+    val innerOffsetDp = ((tempTrimStartMs - audio.trimStartMs).toFloat() / msPerDp).dp
 
     Box(
         modifier = modifier
-            .offset { IntOffset(visualOffsetPx, 0) }
-            .width(layoutWidth)
+            .width(outerLayoutWidth)
             .height(32.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(audio.color.copy(alpha = 0.6f))
-            .border(
-                if (isSelected && !isDragging) 2.dp else if (isDragging) 0.dp else 1.dp, 
-                if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f), 
-                RoundedCornerShape(4.dp)
-            )
-            .clickable { onClick() }
+            .zIndex(if (isSelected) 10f else 0f)
     ) {
-        Text(
-            text = audio.name, 
-            color = Color.White, 
-            fontSize = 9.sp, 
-            fontWeight = FontWeight.Bold, 
-            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-        )
-        // Only show handles if selected AND NOT currently being dragged
-        if (isSelected && !isDragging) {
-            // Left Trim Handle
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .width(10.dp)
-                    .fillMaxHeight()
-                    .background(Color.White)
-                    .draggable(
-                        orientation = Orientation.Horizontal,
-                        state = rememberDraggableState { delta ->
-                            dragAccPx += delta
-                            val dragMs = (dragAccPx / density.density * msPerDp).toLong()
-                            tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
-                        },
-                        onDragStarted = { 
-                            initialTrimStart = tempTrimStartMs
-                            dragAccPx = 0f
-                            onDragStart() 
-                        },
-                        onDragStopped = { 
-                            onTrim(tempTrimStartMs, tempTrimEndMs)
-                            onDragEnd() 
-                        }
-                    )
+        Box(
+            modifier = Modifier
+                .graphicsLayer {
+                    translationX = innerOffsetDp.toPx()
+                }
+                .wrapContentWidth(Alignment.Start, unbounded = true)
+                .width(innerWidth)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(4.dp))
+                .background(audio.color.copy(alpha = 0.6f))
+                .border(
+                    if (isSelected && !isDragging) 2.dp else if (isDragging) 0.dp else 1.dp, 
+                    if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f), 
+                    RoundedCornerShape(4.dp)
+                )
+                .clickable { onClick() }
+        ) {
+            Text(
+                text = audio.name, 
+                color = Color.White, 
+                fontSize = 9.sp, 
+                fontWeight = FontWeight.Bold, 
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
             )
-            // Right Trim Handle
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .width(10.dp)
-                    .fillMaxHeight()
-                    .background(Color.White)
-                    .draggable(
-                        orientation = Orientation.Horizontal,
-                        state = rememberDraggableState { delta ->
-                            dragAccPx += delta
-                            val dragMs = (dragAccPx / density.density * msPerDp).toLong()
-                            tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, audio.originalDurationMs)
-                        },
-                        onDragStarted = { 
-                            initialTrimEnd = tempTrimEndMs
-                            dragAccPx = 0f
-                            onDragStart() 
-                        },
-                        onDragStopped = { 
-                            onTrim(tempTrimStartMs, tempTrimEndMs)
-                            onDragEnd() 
-                        }
-                    )
-            )
+            // Only show handles if selected AND NOT currently being dragged
+            if (isSelected && !isDragging) {
+                // Left Trim Handle
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(10.dp)
+                        .fillMaxHeight()
+                        .background(Color.White)
+                        .draggable(
+                            orientation = Orientation.Horizontal,
+                            state = rememberDraggableState { delta ->
+                                dragAccPx += delta
+                                val dragMs = (dragAccPx / density.density * msPerDp).toLong()
+                                tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
+                            },
+                            onDragStarted = { 
+                                initialTrimStart = tempTrimStartMs
+                                dragAccPx = 0f
+                                onDragStart() 
+                            },
+                            onDragStopped = { 
+                                onTrim(tempTrimStartMs, tempTrimEndMs)
+                                onDragEnd() 
+                            }
+                        )
+                )
+                // Right Trim Handle
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .width(10.dp)
+                        .fillMaxHeight()
+                        .background(Color.White)
+                        .draggable(
+                            orientation = Orientation.Horizontal,
+                            state = rememberDraggableState { delta ->
+                                dragAccPx += delta
+                                val dragMs = (dragAccPx / density.density * msPerDp).toLong()
+                                tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, audio.originalDurationMs)
+                            },
+                            onDragStarted = { 
+                                initialTrimEnd = tempTrimEndMs
+                                dragAccPx = 0f
+                                onDragStart() 
+                            },
+                            onDragStopped = { 
+                                onTrim(tempTrimStartMs, tempTrimEndMs)
+                                onDragEnd() 
+                            }
+                        )
+                )
+            }
         }
     }
 }
@@ -816,24 +855,56 @@ fun VideoClipItem(
     var dragAccPx by remember { mutableFloatStateOf(0f) }
     var isHandlePressed by remember { mutableStateOf(false) }
 
-    val effectiveDur = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
-    val layoutWidth = (effectiveDur.toFloat() / msPerDp).dp
-    val originalWidthDp = (clip.originalDurationMs.coerceAtLeast(effectiveDur) / msPerDp).dp
-    val visualOffsetPx = with(density) { ((tempTrimStartMs - clip.trimStartMs).toFloat() / msPerDp).dp.roundToPx() }
+    val committedDur = (clip.trimEndMs - clip.trimStartMs).coerceAtLeast(100L)
+    val outerLayoutWidth = (committedDur.toFloat() / msPerDp).dp
 
-    Box(modifier = modifier.offset { IntOffset(visualOffsetPx, 0) }.width(layoutWidth).height(64.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)) {
-        Box(modifier = Modifier.fillMaxSize().background(clip.color, RoundedCornerShape(4.dp)).clip(RoundedCornerShape(4.dp))) {
-            Row(modifier = Modifier.requiredWidth(originalWidthDp).fillMaxHeight().offset(x = -(tempTrimStartMs / msPerDp).dp)) {
-                if (clip.thumbnails.isEmpty()) { repeat(5) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) } } else { clip.thumbnails.forEach { Image(bitmap = it.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop) } }
-            }
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
-            if (clip.isMuted) {
-                Icon(painter = painterResource(id = R.drawable.ic_audio_muted), contentDescription = "Muted", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp))
-            }
-            if (isSelected) {
-                Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
-                Box(modifier = Modifier.align(Alignment.CenterStart).width(if (isHandlePressed) 40.dp else 16.dp).fillMaxHeight().background(if (isHandlePressed) Color.Transparent else Color.White).pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isHandlePressed = true; waitForUpOrCancellation(); isHandlePressed = false } } }.draggable(orientation = Orientation.Horizontal, state = rememberDraggableState { delta -> dragAccPx += delta; val dragMs = (dragAccPx / density.density * msPerDp).toLong(); tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L); onDragHandle(tempTrimStartMs) }, onDragStarted = { isHandlePressed = true; initialTrimStart = tempTrimStartMs; dragAccPx = 0f; onDragStart() }, onDragStopped = { isHandlePressed = false; onTrim(tempTrimStartMs, tempTrimEndMs) }), contentAlignment = Alignment.Center) { if (!isHandlePressed) Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
-                Box(modifier = Modifier.align(Alignment.CenterEnd).width(if (isHandlePressed) 40.dp else 16.dp).fillMaxHeight().background(if (isHandlePressed) Color.Transparent else Color.White).pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isHandlePressed = true; waitForUpOrCancellation(); isHandlePressed = false } } }.draggable(orientation = Orientation.Horizontal, state = rememberDraggableState { delta -> dragAccPx += delta; val dragMs = (dragAccPx / density.density * msPerDp).toLong(); tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, clip.originalDurationMs); onDragHandle(tempTrimEndMs) }, onDragStarted = { isHandlePressed = true; initialTrimEnd = tempTrimEndMs; dragAccPx = 0f; onDragStart() }, onDragStopped = { isHandlePressed = false; onTrim(tempTrimStartMs, tempTrimEndMs) }), contentAlignment = Alignment.Center) { if (!isHandlePressed) Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
+    val effectiveDur = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
+    val innerWidth = (effectiveDur.toFloat() / msPerDp).dp
+    val innerOffsetDp = ((tempTrimStartMs - clip.trimStartMs).toFloat() / msPerDp).dp
+
+    val originalWidthDp = (clip.originalDurationMs.coerceAtLeast(effectiveDur) / msPerDp).dp
+
+    Box(modifier = modifier.width(outerLayoutWidth).height(64.dp).zIndex(if (isSelected) 10f else 0f)) {
+        Box(
+            modifier = Modifier
+                .graphicsLayer {
+                    translationX = innerOffsetDp.toPx()
+                }
+                .wrapContentWidth(Alignment.Start, unbounded = true)
+                .width(innerWidth)
+                .fillMaxHeight()
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
+        ) {
+            Box(modifier = Modifier.fillMaxSize().background(clip.color, RoundedCornerShape(4.dp)).clip(RoundedCornerShape(4.dp))) {
+                Row(
+                    modifier = Modifier
+                        .graphicsLayer {
+                            translationX = -(tempTrimStartMs / msPerDp).dp.toPx()
+                        }
+                        .wrapContentWidth(Alignment.Start, unbounded = true)
+                        .width(originalWidthDp)
+                        .fillMaxHeight()
+                ) {
+                    val expectedCount = (clip.originalDurationMs / 1000).toInt().coerceAtLeast(1)
+                    if (clip.thumbnails.isEmpty()) { 
+                        repeat(expectedCount) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) } 
+                    } else { 
+                        clip.thumbnails.forEach { Image(bitmap = it.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop) } 
+                        val remaining = (expectedCount - clip.thumbnails.size).coerceAtLeast(0)
+                        if (remaining > 0) {
+                            repeat(remaining) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) }
+                        }
+                    }
+                }
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
+                if (clip.isMuted) {
+                    Icon(painter = painterResource(id = R.drawable.ic_audio_muted), contentDescription = "Muted", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp))
+                }
+                if (isSelected) {
+                    Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
+                    Box(modifier = Modifier.align(Alignment.CenterStart).width(if (isHandlePressed) 40.dp else 16.dp).fillMaxHeight().background(if (isHandlePressed) Color.Transparent else Color.White).pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isHandlePressed = true; waitForUpOrCancellation(); isHandlePressed = false } } }.draggable(orientation = Orientation.Horizontal, state = rememberDraggableState { delta -> dragAccPx += delta; val dragMs = (dragAccPx / density.density * msPerDp).toLong(); tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L); onDragHandle(tempTrimStartMs) }, onDragStarted = { isHandlePressed = true; initialTrimStart = tempTrimStartMs; dragAccPx = 0f; onDragStart() }, onDragStopped = { isHandlePressed = false; onTrim(tempTrimStartMs, tempTrimEndMs) }), contentAlignment = Alignment.Center) { if (!isHandlePressed) Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
+                    Box(modifier = Modifier.align(Alignment.CenterEnd).width(if (isHandlePressed) 40.dp else 16.dp).fillMaxHeight().background(if (isHandlePressed) Color.Transparent else Color.White).pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isHandlePressed = true; waitForUpOrCancellation(); isHandlePressed = false } } }.draggable(orientation = Orientation.Horizontal, state = rememberDraggableState { delta -> dragAccPx += delta; val dragMs = (dragAccPx / density.density * msPerDp).toLong(); tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, clip.originalDurationMs); onDragHandle(tempTrimEndMs) }, onDragStarted = { isHandlePressed = true; initialTrimEnd = tempTrimEndMs; dragAccPx = 0f; onDragStart() }, onDragStopped = { isHandlePressed = false; onTrim(tempTrimStartMs, tempTrimEndMs) }), contentAlignment = Alignment.Center) { if (!isHandlePressed) Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) }
+                }
             }
         }
     }
