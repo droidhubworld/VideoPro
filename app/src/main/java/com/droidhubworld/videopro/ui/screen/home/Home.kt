@@ -125,7 +125,7 @@ fun Home(
                 player = ExoPlayer.Builder(context).build()
                 audioPlayers[clip.id] = player
             }
-            
+
             val currentTrim = Pair(clip.trimStartMs, clip.trimEndMs)
             if (audioClipTrims[clip.id] != currentTrim) {
                 audioClipTrims[clip.id] = currentTrim
@@ -177,7 +177,7 @@ fun Home(
                     .build()
             }
         }
-        
+
         val currentWindow = exoPlayer.currentMediaItemIndex
         val currentClip = uiState.clips.getOrNull(currentWindow)
         if (currentClip != null) {
@@ -203,7 +203,7 @@ fun Home(
             exoPlayer.seekTo(0, 0)
         }
         exoPlayer.playWhenReady = uiState.isPlaying
-        
+
         if (!uiState.isPlaying) {
             audioPlayers.values.forEach { it.pause() }
         } else {
@@ -215,7 +215,7 @@ fun Home(
                 }
                 val globalPosition = accumulatedMs + exoPlayer.currentPosition
                 viewModel.updateProgress(globalPosition)
-                
+
                 uiState.audioClips.forEach { clip ->
                     val player = audioPlayers[clip.id]
                     if (player != null) {
@@ -235,7 +235,7 @@ fun Home(
                         }
                     }
                 }
-                
+
                 val currentClip = uiState.clips.getOrNull(currentWindow)
                 if (currentClip != null) {
                     val targetVolume = if (currentClip.isMuted) 0f else 1f
@@ -243,18 +243,18 @@ fun Home(
                         exoPlayer.volume = targetVolume
                     }
                 }
-                
+
                 delay(30)
             }
         }
     }
 
-    DisposableEffect(Unit) { 
-        onDispose { 
+    DisposableEffect(Unit) {
+        onDispose {
             exoPlayer.release()
             audioPlayers.values.forEach { it.release() }
             audioPlayers.clear()
-        } 
+        }
     }
 
     if (uiState.isLoading) {
@@ -318,7 +318,7 @@ fun Home(
                     if (exoPlayer.volume != targetVolume) exoPlayer.volume = targetVolume
                 }
             }
-            
+
             uiState.audioClips.forEach { clip ->
                 val player = audioPlayers[clip.id]
                 if (player != null) {
@@ -455,7 +455,7 @@ fun EditorTimeline(
     var audioDragOffset by remember { mutableFloatStateOf(0f) }
     var lastSnappedMs by remember { mutableLongStateOf(-1L) }
     var dragStartOffsetMs by remember { mutableLongStateOf(0L) }
-    
+
     // Zoom out (120f) only when dragging video clips, not audio clips
     val displayMsPerDpState = animateFloatAsState(targetValue = if (draggedIndex != null) 120f else uiState.msPerDp, animationSpec = tween(durationMillis = 300), label = "dragZoom")
     val displayMsPerDp by displayMsPerDpState
@@ -525,8 +525,8 @@ fun EditorTimeline(
         }
     ) {
         TimelineHeader(
-            currentTime = if (isTrimming) freezeRulerTime else uiState.currentTime, 
-            currentPositionMs = if (isTrimming) freezeRulerMs else visualPositionMs, 
+            currentTime = if (isTrimming) freezeRulerTime else uiState.currentTime,
+            currentPositionMs = if (isTrimming) freezeRulerMs else visualPositionMs,
             msPerDp = displayMsPerDp
         )
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -555,11 +555,19 @@ fun EditorTimeline(
                                     msPerDp = displayMsPerDp,
                                     isSelected = uiState.selectedClipId == clip.id,
                                     onClick = { onClipSelected(clip.id) },
-                                    onTrim = { startMs, endMs -> isTrimming = false; onTrimClip(clip.id, startMs, endMs) },
-                                    onDragStart = { 
+                                    onTrim = { startMs, endMs ->
+                                        val isStartDragged = startMs != clip.trimStartMs
+                                        var timeMs = 0L
+                                        for (c in uiState.clips) { if (c.id == clip.id) break; timeMs += c.durationMs }
+                                        val finalPlayheadMs = if (isStartDragged) timeMs else (timeMs + (endMs - startMs))
+                                        isTrimming = false
+                                        onTrimClip(clip.id, startMs, endMs)
+                                        onSeek(finalPlayheadMs)
+                                    },
+                                    onDragStart = {
                                         freezeRulerMs = visualPositionMs
                                         freezeRulerTime = uiState.currentTime
-                                        isTrimming = true 
+                                        isTrimming = true
                                     },
                                     onDragHandle = { previewTrimMs ->
                                         var timeMs = 0L
@@ -600,7 +608,7 @@ fun EditorTimeline(
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 // Render Audio Clips that intersect with this video clip's timeframe
-                                Box(modifier = Modifier.layout { measurable, constraints -> 
+                                Box(modifier = Modifier.layout { measurable, constraints ->
                                     val placeable = measurable.measure(constraints)
                                     layout(0, placeable.height) { placeable.placeRelative(0, 0) }
                                 }) {
@@ -612,17 +620,17 @@ fun EditorTimeline(
                                         if (audio.startOffsetMs < clipEndMs && audioEnd > accMs) {
                                             val audioRelOffsetMs = audio.startOffsetMs - accMs
                                             val isAudioBeingDragged = draggedAudioId == audio.id
-                                            
+
                                             // Handle snapping logic for visual offset
                                             val currentDragOffsetMs = if (isAudioBeingDragged) (audioDragOffset / density.density * displayMsPerDp).toLong() else 0L
                                             val tentativePosMs = (if (isAudioBeingDragged) dragStartOffsetMs else audio.startOffsetMs) + currentDragOffsetMs
                                             val tentativeEndMs = tentativePosMs + audio.durationMs
-                                            
+
                                             var finalVisualOffsetMs = currentDragOffsetMs
                                             if (isAudioBeingDragged) {
                                                 val snapThresholdMs = (10 * displayMsPerDp).toLong()
                                                 val snapPoints = mutableListOf<Long>(0) // Snap to start of timeline
-                                                
+
                                                 // Snap to other audio clips
                                                 uiState.audioClips.filter { it.id != audio.id }.forEach { other ->
                                                     snapPoints.add(other.startOffsetMs)
@@ -634,7 +642,7 @@ fun EditorTimeline(
                                                     vAcc += vClip.durationMs
                                                     snapPoints.add(vAcc)
                                                 }
-                                                
+
                                                 var bestSnapMs: Long? = null
                                                 for (point in snapPoints) {
                                                     if (abs(tentativePosMs - point) < snapThresholdMs) {
@@ -645,7 +653,7 @@ fun EditorTimeline(
                                                         break
                                                     }
                                                 }
-                                                
+
                                                 if (bestSnapMs != null) {
                                                     finalVisualOffsetMs = bestSnapMs - audio.startOffsetMs
                                                     if (lastSnappedMs != bestSnapMs) {
@@ -664,10 +672,10 @@ fun EditorTimeline(
                                                 isDragging = isAudioBeingDragged,
                                                 onClick = { onAudioSelected(audio.id) },
                                                 onTrim = { start, end -> onTrimAudio(audio.id, start, end) },
-                                                onDragStart = { 
+                                                onDragStart = {
                                                     freezeRulerMs = visualPositionMs
                                                     freezeRulerTime = uiState.currentTime
-                                                    isTrimming = true 
+                                                    isTrimming = true
                                                 },
                                                 onDragEnd = { isTrimming = false },
                                                 modifier = Modifier
@@ -676,7 +684,7 @@ fun EditorTimeline(
                                                     .alpha(if (draggedAudioId != null && !isAudioBeingDragged) 0.6f else 1f)
                                                     .pointerInput(audio, displayMsPerDp, density.density) {
                                                         detectDragGesturesAfterLongPress(
-                                                            onDragStart = { 
+                                                            onDragStart = {
                                                                 draggedAudioId = audio.id
                                                                 dragStartOffsetMs = audio.startOffsetMs
                                                                 audioDragOffset = 0f
@@ -696,7 +704,7 @@ fun EditorTimeline(
                                                                 audioDragOffset = 0f
                                                                 lastSnappedMs = -1L
                                                             },
-                                                            onDragCancel = { 
+                                                            onDragCancel = {
                                                                 draggedAudioId = null
                                                                 audioDragOffset = 0f
                                                                 lastSnappedMs = -1L
@@ -737,7 +745,7 @@ fun AudioClipItem(
     val density = LocalDensity.current
     var tempTrimStartMs by remember(audio.id, audio.trimStartMs) { mutableLongStateOf(audio.trimStartMs) }
     var tempTrimEndMs by remember(audio.id, audio.trimEndMs) { mutableLongStateOf(audio.trimEndMs) }
-    
+
     var dragAccPx by remember { mutableFloatStateOf(0f) }
     var initialTrimStart by remember { mutableLongStateOf(0L) }
     var initialTrimEnd by remember { mutableLongStateOf(0L) }
@@ -766,17 +774,17 @@ fun AudioClipItem(
                 .clip(RoundedCornerShape(4.dp))
                 .background(audio.color.copy(alpha = 0.6f))
                 .border(
-                    if (isSelected && !isDragging) 2.dp else if (isDragging) 0.dp else 1.dp, 
-                    if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f), 
+                    if (isSelected && !isDragging) 2.dp else if (isDragging) 0.dp else 1.dp,
+                    if (isSelected && !isDragging) Color.White else if (isDragging) Color.Transparent else Color.White.copy(0.3f),
                     RoundedCornerShape(4.dp)
                 )
                 .clickable { onClick() }
         ) {
             Text(
-                text = audio.name, 
-                color = Color.White, 
-                fontSize = 9.sp, 
-                fontWeight = FontWeight.Bold, 
+                text = audio.name,
+                color = Color.White,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp)
             )
             // Only show handles if selected AND NOT currently being dragged
@@ -795,14 +803,14 @@ fun AudioClipItem(
                                 val dragMs = (dragAccPx / density.density * msPerDp).toLong()
                                 tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
                             },
-                            onDragStarted = { 
+                            onDragStarted = {
                                 initialTrimStart = tempTrimStartMs
                                 dragAccPx = 0f
-                                onDragStart() 
+                                onDragStart()
                             },
-                            onDragStopped = { 
+                            onDragStopped = {
                                 onTrim(tempTrimStartMs, tempTrimEndMs)
-                                onDragEnd() 
+                                onDragEnd()
                             }
                         )
                 )
@@ -820,14 +828,14 @@ fun AudioClipItem(
                                 val dragMs = (dragAccPx / density.density * msPerDp).toLong()
                                 tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, audio.originalDurationMs)
                             },
-                            onDragStarted = { 
+                            onDragStarted = {
                                 initialTrimEnd = tempTrimEndMs
                                 dragAccPx = 0f
-                                onDragStart() 
+                                onDragStart()
                             },
-                            onDragStopped = { 
+                            onDragStopped = {
                                 onTrim(tempTrimStartMs, tempTrimEndMs)
-                                onDragEnd() 
+                                onDragEnd()
                             }
                         )
                 )
@@ -886,10 +894,10 @@ fun VideoClipItem(
                         .fillMaxHeight()
                 ) {
                     val expectedCount = (clip.originalDurationMs / 1000).toInt().coerceAtLeast(1)
-                    if (clip.thumbnails.isEmpty()) { 
-                        repeat(expectedCount) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) } 
-                    } else { 
-                        clip.thumbnails.forEach { Image(bitmap = it.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop) } 
+                    if (clip.thumbnails.isEmpty()) {
+                        repeat(expectedCount) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) }
+                    } else {
+                        clip.thumbnails.forEach { Image(bitmap = it.asImageBitmap(), contentDescription = null, modifier = Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop) }
                         val remaining = (expectedCount - clip.thumbnails.size).coerceAtLeast(0)
                         if (remaining > 0) {
                             repeat(remaining) { Box(modifier = Modifier.weight(1f).fillMaxHeight().border(0.5.dp, Color.White.copy(0.1f))) }
@@ -958,8 +966,8 @@ fun EditorBottomBar(
     isVideoClipSelected: Boolean,
     isAudioClipSelected: Boolean,
     selectedClipIsMuted: Boolean,
-    onSplitClick: () -> Unit, 
-    onDeleteClick: () -> Unit, 
+    onSplitClick: () -> Unit,
+    onDeleteClick: () -> Unit,
     onAddAudioClick: () -> Unit,
     onMuteToggleClick: () -> Unit
 ) {
@@ -970,7 +978,7 @@ fun EditorBottomBar(
             if (isVideoClipSelected) {
                 BottomBarItem(
                     painterResource(if (selectedClipIsMuted) R.drawable.ic_audio else R.drawable.ic_audio_muted),
-                    if (selectedClipIsMuted) "Unmute" else "Mute", 
+                    if (selectedClipIsMuted) "Unmute" else "Mute",
                     onClick = onMuteToggleClick
                 )
             }
