@@ -908,7 +908,8 @@ fun VideoClipItem(
     var initialTrimStart by remember { mutableLongStateOf(0L) }
     var initialTrimEnd by remember { mutableLongStateOf(0L) }
     var dragAccPx by remember { mutableFloatStateOf(0f) }
-    var isHandlePressed by remember { mutableStateOf(false) }
+    var isLeftHandlePressed by remember { mutableStateOf(false) }
+    var isRightHandlePressed by remember { mutableStateOf(false) }
 
     val effectiveDur = (tempTrimEndMs - tempTrimStartMs).coerceAtLeast(100L)
     val layoutWidthDp = (effectiveDur.toFloat() / msPerDp).dp
@@ -922,114 +923,141 @@ fun VideoClipItem(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(clip.color, RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(4.dp))
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
         ) {
-            Box(modifier = Modifier.fillMaxSize().background(clip.color, RoundedCornerShape(4.dp)).clip(RoundedCornerShape(4.dp))) {
+            // Memory-efficient Virtualized Canvas for Thumbnails
+            Canvas(
+                modifier = Modifier
+                    .graphicsLayer { translationX = -(tempTrimStartMs / msPerDp).dp.toPx() }
+                    .wrapContentWidth(Alignment.Start, unbounded = true)
+                    .width(originalWidthDp)
+                    .fillMaxHeight()
+            ) {
+                val expectedCount = (clip.originalDurationMs / 1000).toInt().coerceAtLeast(1)
+                val thumbWidth = size.width / expectedCount
                 
-                // Memory-efficient Virtualized Canvas for Thumbnails
-                Canvas(
-                    modifier = Modifier
-                        .graphicsLayer { translationX = -(tempTrimStartMs / msPerDp).dp.toPx() }
-                        .wrapContentWidth(Alignment.Start, unbounded = true)
-                        .width(originalWidthDp)
-                        .fillMaxHeight()
-                ) {
-                    val expectedCount = (clip.originalDurationMs / 1000).toInt().coerceAtLeast(1)
-                    val thumbWidth = size.width / expectedCount
-                    
-                    if (imageBitmaps.isNotEmpty()) {
-                        imageBitmaps.forEachIndexed { index, bmp ->
-                            drawImage(
-                                image = bmp,
-                                dstOffset = IntOffset((index * thumbWidth).toInt(), 0),
-                                dstSize = IntSize(ceil(thumbWidth).toInt(), size.height.toInt())
-                            )
-                        }
-                    }
-                    
-                    // Draw visual dividers 
-                    val dividerColor = Color.White.copy(alpha = 0.1f)
-                    for (i in 1 until expectedCount) {
-                        val x = i * thumbWidth
-                        drawLine(dividerColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
+                if (imageBitmaps.isNotEmpty()) {
+                    imageBitmaps.forEachIndexed { index, bmp ->
+                        drawImage(
+                            image = bmp,
+                            dstOffset = IntOffset((index * thumbWidth).toInt(), 0),
+                            dstSize = IntSize(ceil(thumbWidth).toInt(), size.height.toInt())
+                        )
                     }
                 }
                 
-                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
-
-                if (clip.isMuted) {
-                    Icon(painter = painterResource(id = R.drawable.ic_audio_muted), contentDescription = "Muted", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp))
+                // Draw visual dividers 
+                val dividerColor = Color.White.copy(alpha = 0.1f)
+                for (i in 1 until expectedCount) {
+                    val x = i * thumbWidth
+                    drawLine(dividerColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
                 }
+            }
+            
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
+            
+            Row(modifier = Modifier.align(Alignment.TopStart).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (isSelected) {
                     Text(
                         text = String.format(Locale.getDefault(), "%.1fs", effectiveDur / 1000f),
                         color = Color.White,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.align(Alignment.BottomStart).padding(4.dp)
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 4.dp)
                     )
-
-                    Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
-                    
-                    // Left Trim Handle
-                    Box(modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .width(if (isHandlePressed) 40.dp else 16.dp)
-                        .fillMaxHeight()
-                        .background(if (isHandlePressed) Color.Transparent else Color.White)
-                        .pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isHandlePressed = true; waitForUpOrCancellation(); isHandlePressed = false } } }
-                        .draggable(
-                            orientation = Orientation.Horizontal, 
-                            state = rememberDraggableState { delta -> 
-                                dragAccPx += delta
-                                val dragMs = (dragAccPx / density.density * msPerDp).toLong()
-                                tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
-                                onTrimPreview(tempTrimStartMs, tempTrimEndMs) 
-                                onDragLeftHandle(delta)
-                            }, 
-                            onDragStarted = { 
-                                isHandlePressed = true
-                                initialTrimStart = tempTrimStartMs
-                                dragAccPx = 0f
-                                onDragStart() 
-                            }, 
-                            onDragStopped = { 
-                                isHandlePressed = false
-                                onTrim(tempTrimStartMs, tempTrimEndMs) 
-                            }
-                        ), contentAlignment = Alignment.Center
-                    ) { 
-                        if (!isHandlePressed) Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) 
+                }
+                if (clip.isMuted) {
+                    Box(modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(6.dp)).padding(4.dp)) {
+                        Icon(painter = painterResource(id = R.drawable.ic_audio_muted), contentDescription = "Muted", tint = Color.White, modifier = Modifier.size(14.dp))
                     }
-                    
-                    // Right Trim Handle
-                    Box(modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .width(if (isHandlePressed) 40.dp else 16.dp)
-                        .fillMaxHeight()
-                        .background(if (isHandlePressed) Color.Transparent else Color.White)
-                        .pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isHandlePressed = true; waitForUpOrCancellation(); isHandlePressed = false } } }
-                        .draggable(
-                            orientation = Orientation.Horizontal, 
-                            state = rememberDraggableState { delta -> 
-                                dragAccPx += delta
-                                val dragMs = (dragAccPx / density.density * msPerDp).toLong()
-                                tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, clip.originalDurationMs)
-                                onTrimPreview(tempTrimStartMs, tempTrimEndMs) 
-                            }, 
-                            onDragStarted = { 
-                                isHandlePressed = true
-                                initialTrimEnd = tempTrimEndMs
-                                dragAccPx = 0f
-                                onDragStart() 
-                            }, 
-                            onDragStopped = { 
-                                isHandlePressed = false
-                                onTrim(tempTrimStartMs, tempTrimEndMs) 
-                            }
-                        ), contentAlignment = Alignment.Center
-                    ) { 
-                        if (!isHandlePressed) Box(modifier = Modifier.width(3.dp).height(24.dp).background(Color(0xFFE53935))) 
+                }
+            }
+        }
+        
+        if (isSelected) {
+            Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
+            
+            // Left Trim Handle
+            val leftWidth = if (isLeftHandlePressed) 40.dp else 16.dp
+            Box(modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset(x = -leftWidth)
+                .width(leftWidth)
+                .fillMaxHeight()
+                .background(if (isLeftHandlePressed) Color.White.copy(alpha = 0f) else Color.White, RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp))
+                .pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isLeftHandlePressed = true; waitForUpOrCancellation(); isLeftHandlePressed = false } } }
+                .draggable(
+                    orientation = Orientation.Horizontal, 
+                    state = rememberDraggableState { delta -> 
+                        dragAccPx += delta
+                        val dragMs = (dragAccPx / density.density * msPerDp).toLong()
+                        tempTrimStartMs = (initialTrimStart + dragMs).coerceIn(0L, tempTrimEndMs - 200L)
+                        onTrimPreview(tempTrimStartMs, tempTrimEndMs) 
+                        onDragLeftHandle(delta)
+                    }, 
+                    onDragStarted = { 
+                        isLeftHandlePressed = true
+                        initialTrimStart = tempTrimStartMs
+                        dragAccPx = 0f
+                        onDragStart() 
+                    }, 
+                    onDragStopped = { 
+                        isLeftHandlePressed = false
+                        onTrim(tempTrimStartMs, tempTrimEndMs) 
+                    }
+                ), contentAlignment = Alignment.Center
+            ) { 
+                if (!isLeftHandlePressed) {
+                    Canvas(modifier = Modifier.size(6.dp, 10.dp)) {
+                        val path = Path().apply {
+                            moveTo(size.width, 0f)
+                            lineTo(0f, size.height / 2f)
+                            lineTo(size.width, size.height)
+                        }
+                        drawPath(path, color = Color.Black, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                    }
+                }
+            }
+            
+            // Right Trim Handle
+            val rightWidth = if (isRightHandlePressed) 40.dp else 16.dp
+            Box(modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .offset(x = rightWidth)
+                .width(rightWidth)
+                .fillMaxHeight()
+                .background(if (isRightHandlePressed) Color.White.copy(alpha = 0f) else Color.White, RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp))
+                .pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isRightHandlePressed = true; waitForUpOrCancellation(); isRightHandlePressed = false } } }
+                .draggable(
+                    orientation = Orientation.Horizontal, 
+                    state = rememberDraggableState { delta -> 
+                        dragAccPx += delta
+                        val dragMs = (dragAccPx / density.density * msPerDp).toLong()
+                        tempTrimEndMs = (initialTrimEnd + dragMs).coerceIn(tempTrimStartMs + 200L, clip.originalDurationMs)
+                        onTrimPreview(tempTrimStartMs, tempTrimEndMs) 
+                    }, 
+                    onDragStarted = { 
+                        isRightHandlePressed = true
+                        initialTrimEnd = tempTrimEndMs
+                        dragAccPx = 0f
+                        onDragStart() 
+                    }, 
+                    onDragStopped = { 
+                        isRightHandlePressed = false
+                        onTrim(tempTrimStartMs, tempTrimEndMs) 
+                    }
+                ), contentAlignment = Alignment.Center
+            ) { 
+                if (!isRightHandlePressed) {
+                    Canvas(modifier = Modifier.size(6.dp, 10.dp)) {
+                        val path = Path().apply {
+                            moveTo(0f, 0f)
+                            lineTo(size.width, size.height / 2f)
+                            lineTo(0f, size.height)
+                        }
+                        drawPath(path, color = Color.Black, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
                     }
                 }
             }
