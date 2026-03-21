@@ -983,10 +983,10 @@ fun VideoClipItem(
             val leftWidth = if (isLeftHandlePressed) 40.dp else 16.dp
             Box(modifier = Modifier
                 .align(Alignment.CenterStart)
-                .offset(x = -leftWidth)
+                .offset(x = -leftWidth + 2.dp)
                 .width(leftWidth)
                 .fillMaxHeight()
-                .background(if (isLeftHandlePressed) Color.White.copy(alpha = 0f) else Color.White, RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp))
+                .background(Color.White, RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp))
                 .pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isLeftHandlePressed = true; waitForUpOrCancellation(); isLeftHandlePressed = false } } }
                 .draggable(
                     orientation = Orientation.Horizontal, 
@@ -1025,10 +1025,10 @@ fun VideoClipItem(
             val rightWidth = if (isRightHandlePressed) 40.dp else 16.dp
             Box(modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .offset(x = rightWidth)
+                .offset(x = rightWidth - 2.dp)
                 .width(rightWidth)
                 .fillMaxHeight()
-                .background(if (isRightHandlePressed) Color.White.copy(alpha = 0f) else Color.White, RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp))
+                .background(Color.White, RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp))
                 .pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitFirstDown(); isRightHandlePressed = true; waitForUpOrCancellation(); isRightHandlePressed = false } } }
                 .draggable(
                     orientation = Orientation.Horizontal, 
