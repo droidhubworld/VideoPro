@@ -961,6 +961,14 @@ fun VideoClipItem(
                     Icon(painter = painterResource(id = R.drawable.ic_audio_muted), contentDescription = "Muted", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(16.dp))
                 }
                 if (isSelected) {
+                    Text(
+                        text = String.format(Locale.getDefault(), "%.1fs", effectiveDur / 1000f),
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.BottomStart).padding(4.dp)
+                    )
+
                     Box(modifier = Modifier.fillMaxSize().border(2.dp, Color.White, RoundedCornerShape(4.dp)))
                     
                     // Left Trim Handle
