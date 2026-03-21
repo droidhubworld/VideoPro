@@ -930,6 +930,7 @@ fun VideoClipItem(
                 Canvas(
                     modifier = Modifier
                         .graphicsLayer { translationX = -(tempTrimStartMs / msPerDp).dp.toPx() }
+                        .wrapContentWidth(Alignment.Start, unbounded = true)
                         .width(originalWidthDp)
                         .fillMaxHeight()
                 ) {
