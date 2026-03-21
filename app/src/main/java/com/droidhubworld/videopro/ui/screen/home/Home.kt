@@ -583,7 +583,7 @@ fun EditorTimeline(
                                     Box(
                                         modifier = Modifier
                                             .offset(x = clipStartPx)
-                                            .zIndex(if (isBeingDragged) 100f else 1f)
+                                            .zIndex(if (isBeingDragged) 100f else if (uiState.selectedClipId == clip.id) 10f else (uiState.clips.size - index).toFloat())
                                             .offset { if (isBeingDragged) IntOffset(dragOffset.roundToInt(), 0) else IntOffset.Zero }
                                             .scale(if (isBeingDragged) 0.85f else 1f)
                                             .alpha(if (draggedClipId != null && !isBeingDragged) 0.6f else 1f)
@@ -715,7 +715,7 @@ fun EditorTimeline(
                                     Box(
                                         modifier = Modifier
                                             .offset(x = audioStartPx)
-                                            .zIndex(if (isAudioBeingDragged) 100f else 1f)
+                                            .zIndex(if (isAudioBeingDragged) 100f else if (uiState.selectedAudioClipId == audio.id) 10f else 1f)
                                             .alpha(if (draggedAudioId != null && !isAudioBeingDragged) 0.6f else 1f)
                                     ) {
                                         AudioClipItem(
