@@ -447,7 +447,9 @@ fun EditorTimeline(
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
     val halfScreenWidth = screenWidth / 2
+    val paddingTrick = screenWidth * 2
     val density = LocalDensity.current
+    val playheadOffsetPx = with(density) { (paddingTrick - halfScreenWidth).toPx() }
     val haptic = LocalHapticFeedback.current
     
     val scrollState = rememberScrollState()
@@ -477,9 +479,10 @@ fun EditorTimeline(
 
     // Precisely compute the global visual time corresponding to the center of the screen
     // Using horizontalScroll, the scrollState value is exactly the offset in pixels
-    val visualPositionMs by remember(scrollState.value, displayMsPerDpState.value) {
+    val visualPositionMs by remember(scrollState.value, displayMsPerDpState.value, playheadOffsetPx) {
         derivedStateOf {
-            (scrollState.value / density.density * displayMsPerDpState.value).toLong().coerceAtLeast(0L)
+            val offsetPx = scrollState.value - playheadOffsetPx
+            (offsetPx / density.density * displayMsPerDpState.value).toLong().coerceAtLeast(0L)
         }
     }
 
@@ -493,10 +496,10 @@ fun EditorTimeline(
         }
     }
 
-    LaunchedEffect(uiState.currentPositionMs, displayMsPerDp, isTrimming, draggedClipId, draggedAudioId) {
+    LaunchedEffect(uiState.currentPositionMs, displayMsPerDp, isTrimming, draggedClipId, draggedAudioId, playheadOffsetPx) {
         if (!scrollState.isScrollInProgress && !isTrimming && draggedClipId == null && draggedAudioId == null) {
             val targetPx = (uiState.currentPositionMs / displayMsPerDp * density.density).roundToInt()
-            scrollState.scrollTo(targetPx)
+            scrollState.scrollTo(targetPx + playheadOffsetPx.roundToInt())
         }
     }
 
@@ -558,7 +561,7 @@ fun EditorTimeline(
                             .horizontalScroll(scrollState)
                     ) {
                         // The Padding Trick
-                        Spacer(modifier = Modifier.width(halfScreenWidth))
+                        Spacer(modifier = Modifier.width(paddingTrick))
                         
                         // The Track System
                         Column(modifier = Modifier.width(timelineWidthDp).padding(top = 24.dp)) {
@@ -762,7 +765,7 @@ fun EditorTimeline(
                             }
                         }
                         
-                        Spacer(modifier = Modifier.width(halfScreenWidth))
+                        Spacer(modifier = Modifier.width(paddingTrick))
                     }
                     
                     // Fixed Center Playhead
