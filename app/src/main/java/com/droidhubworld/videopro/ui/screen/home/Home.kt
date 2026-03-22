@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -526,9 +527,9 @@ fun EditorTimeline(
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
     val halfScreenWidth = screenWidth / 2
-    val paddingTrick = halfScreenWidth// screenWidth * 2
+    val paddingTrick = screenWidth * 2
     val density = LocalDensity.current
-    val playheadOffsetPx = 0f//with(density) { (paddingTrick - halfScreenWidth).toPx() }
+    val playheadOffsetPx = with(density) { (paddingTrick - halfScreenWidth).toPx() }
     val haptic = LocalHapticFeedback.current
 
     val coverWidthDp = 60.dp
@@ -700,7 +701,7 @@ fun EditorTimeline(
                                 Box(
                                     modifier = Modifier
                                         .offset(x = (-60).dp)
-                                        .width(coverWidthDp)
+                                        .requiredWidth(coverWidthDp)
                                         .fillMaxHeight()
                                         .background(
                                             Color(0xFF222222),
@@ -1234,7 +1235,7 @@ fun VideoClipItem(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier
                             .background(
-                                Color.Black.copy(alpha = 0.6f),
+                                Color.Black.copy(alpha = 0.5f),
                                 RoundedCornerShape(6.dp)
                             )
                             .padding(horizontal = 6.dp, vertical = 4.dp)
@@ -1244,7 +1245,7 @@ fun VideoClipItem(
                     Box(
                         modifier = Modifier
                             .background(
-                                Color.Black.copy(alpha = 0.6f),
+                                Color.Black.copy(alpha = 0.5f),
                                 RoundedCornerShape(6.dp)
                             )
                             .padding(4.dp)
@@ -1279,14 +1280,16 @@ fun VideoClipItem(
                     .width(leftWidth)
                     .fillMaxHeight()
                     .background(
-                        if (isLeftHandlePressed) Color.White.copy(alpha = 0f) else Color.White,
+                        if (isLeftHandlePressed || isRightHandlePressed) Color.White.copy(alpha = 0f) else Color.White,
                         RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
                     )
                     .pointerInput(Unit) {
                         awaitPointerEventScope {
                             while (true) {
-                                awaitFirstDown(); isLeftHandlePressed =
-                                    true; waitForUpOrCancellation(); isLeftHandlePressed = false
+                                awaitFirstDown()
+                                isLeftHandlePressed = true
+                                waitForUpOrCancellation()
+                                isLeftHandlePressed = false
                             }
                         }
                     }
@@ -1327,8 +1330,6 @@ fun VideoClipItem(
                             }
                         }
 
-
-
                         drawPath(
                             path,
                             color = Color.Black,
@@ -1351,14 +1352,16 @@ fun VideoClipItem(
                     .width(rightWidth)
                     .fillMaxHeight()
                     .background(
-                        if (isRightHandlePressed) Color.White.copy(alpha = 0f) else Color.White,
+                        if (isRightHandlePressed || isLeftHandlePressed) Color.White.copy(alpha = 0f) else Color.White,
                         RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp)
                     )
                     .pointerInput(Unit) {
                         awaitPointerEventScope {
                             while (true) {
-                                awaitFirstDown(); isRightHandlePressed =
-                                    true; waitForUpOrCancellation(); isRightHandlePressed = false
+                                awaitFirstDown()
+                                isRightHandlePressed = true
+                                waitForUpOrCancellation()
+                                isRightHandlePressed = false
                             }
                         }
                     }
@@ -1549,12 +1552,6 @@ fun EditorBottomBar(
                     onClick = onMuteToggleClick
                 )
             }
-            BottomBarItem(
-                rememberVectorPainter(Icons.Default.Delete),
-                "Delete",
-                onClick = onDeleteClick
-            )
-        } else {
             BottomBarItem(
                 rememberVectorPainter(Icons.Default.Delete),
                 "Delete",
