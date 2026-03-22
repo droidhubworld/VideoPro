@@ -1332,7 +1332,7 @@ fun VideoClipItem(
 
                         drawPath(
                             path,
-                            color = Color.Black,
+                            color = if (isLeftHandlePressed || isRightHandlePressed) Color.White.copy(alpha = 0f) else Color.Black,
                             style = androidx.compose.ui.graphics.drawscope.Stroke(
                                 width = 4f,
                                 cap = androidx.compose.ui.graphics.StrokeCap.Round,
@@ -1404,7 +1404,7 @@ fun VideoClipItem(
                         }
                         drawPath(
                             path,
-                            color = Color.Black,
+                            color = if (isLeftHandlePressed || isRightHandlePressed) Color.White.copy(alpha = 0f) else Color.Black,
                             style = androidx.compose.ui.graphics.drawscope.Stroke(
                                 width = 4f,
                                 cap = androidx.compose.ui.graphics.StrokeCap.Round,
