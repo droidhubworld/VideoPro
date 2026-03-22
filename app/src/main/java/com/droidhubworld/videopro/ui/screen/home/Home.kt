@@ -86,6 +86,7 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -145,6 +146,10 @@ fun Home(
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? -> uri?.let { viewModel.addAudio(it, context) } }
+
+    val coverImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? -> uri?.let { viewModel.setCoverImage(it, context) } }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -342,6 +347,7 @@ fun Home(
         version = version,
         onAddVideoClick = { videoPickerLauncher.launch("video/*") },
         onAddAudioClick = { audioPickerLauncher.launch("audio/*") },
+        onAddCoverClick = { coverImagePickerLauncher.launch("image/*") },
         onExportClick = { viewModel.showExportDialog(true) },
         onPlayPauseClick = { viewModel.onPlayPauseClicked() },
         onUndoClick = { viewModel.undo() },
@@ -407,6 +413,7 @@ fun EditorScreenContent(
     version: String,
     onAddVideoClick: () -> Unit,
     onAddAudioClick: () -> Unit,
+    onAddCoverClick: () -> Unit,
     onExportClick: () -> Unit,
     onPlayPauseClick: () -> Unit,
     onUndoClick: () -> Unit,
@@ -475,6 +482,7 @@ fun EditorScreenContent(
             EditorTimeline(
                 uiState = uiState,
                 onAddVideoClick = onAddVideoClick,
+                onAddCoverClick = onAddCoverClick,
                 onClipSelected = onClipSelected,
                 onAudioSelected = onAudioSelected,
                 onMoveClip = onMoveClip,
@@ -497,6 +505,7 @@ fun EditorScreenContent(
 fun EditorTimeline(
     uiState: HomeUiState,
     onAddVideoClick: () -> Unit,
+    onAddCoverClick: () -> Unit,
     onClipSelected: (String?) -> Unit,
     onAudioSelected: (String?) -> Unit,
     onMoveClip: (Int, Int) -> Unit,
@@ -662,6 +671,37 @@ fun EditorTimeline(
                             Box(modifier = Modifier
                                 .fillMaxWidth()
                                 .height(64.dp)) {
+                                // Cover Box
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x = (-60).dp)
+                                        .width(60.dp)
+                                        .fillMaxHeight()
+                                        .background(
+                                            Color(0xFF222222),
+                                            RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
+                                        )
+                                        .border(
+                                            1.dp,
+                                            Color.White.copy(alpha = 0.3f),
+                                            RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
+                                        )
+                                        .clip(RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)) // Clip the image corners
+                                        .clickable { onAddCoverClick() }, // Trigger the picker
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (uiState.coverBitmap != null) {
+                                        androidx.compose.foundation.Image(
+                                            bitmap = uiState.coverBitmap.asImageBitmap(),
+                                            contentDescription = "Cover Image",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop // Keep it looking proportional inside the box
+                                        )
+                                    } else {
+                                        Text("Cover", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
                                 var accumulatedMs = 0L
                                 uiState.clips.forEachIndexed { index, clip ->
                                     val isBeingDragged = draggedClipId == clip.id

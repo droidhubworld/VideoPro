@@ -137,7 +137,27 @@ class HomeViewModel @Inject constructor() : ViewModel() {
             loadClipData(uri, context)
         }
     }
+    fun setCoverImage(uri: Uri, context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Decode the URI into a Bitmap
+                val bitmap = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    val source = android.graphics.ImageDecoder.createSource(context.contentResolver, uri)
+                    android.graphics.ImageDecoder.decodeBitmap(source)
+                } else {
+                    @Suppress("DEPRECATION")
+                    android.provider.MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                }
 
+                // Update the state on the main thread
+                withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy(coverBitmap = bitmap) }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
     private fun loadClipData(uri: Uri, context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
             val retriever = MediaMetadataRetriever()
@@ -763,7 +783,8 @@ data class HomeUiState(
     val canRedo: Boolean = false,
     val isExporting: Boolean = false,
     val exportProgress: Float = 0f,
-    val showExportDialog: Boolean = false
+    val showExportDialog: Boolean = false,
+    val coverBitmap: Bitmap? = null
 )
 
 data class VideoClip(
