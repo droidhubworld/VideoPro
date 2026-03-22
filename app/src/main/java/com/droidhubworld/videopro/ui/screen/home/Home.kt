@@ -1,6 +1,7 @@
 package com.droidhubworld.videopro.ui.screen.home
 
 import android.net.Uri
+import android.util.Log
 import android.view.LayoutInflater
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -114,6 +115,7 @@ import androidx.media3.ui.PlayerView
 import com.droidhubworld.videopro.R
 import com.droidhubworld.videopro.ui.theme.VideoProTheme
 import com.droidhubworld.videopro.utils.FFmpegNative
+import com.droidhubworld.videopro.utils.vibrate
 import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.abs
@@ -520,13 +522,17 @@ fun EditorTimeline(
     onTransitionClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
     val halfScreenWidth = screenWidth / 2
-    val paddingTrick = screenWidth * 2
+    val paddingTrick = halfScreenWidth// screenWidth * 2
     val density = LocalDensity.current
-    val playheadOffsetPx = with(density) { (paddingTrick - halfScreenWidth).toPx() }
+    val playheadOffsetPx = 0f//with(density) { (paddingTrick - halfScreenWidth).toPx() }
     val haptic = LocalHapticFeedback.current
+
+    val coverWidthDp = 60.dp
+    val coverWidthPx = with(density) { coverWidthDp.toPx() }
 
     val scrollState = rememberScrollState()
 
@@ -589,6 +595,21 @@ fun EditorTimeline(
                 (uiState.currentPositionMs / displayMsPerDp * density.density).roundToInt()
             scrollState.scrollTo(targetPx + playheadOffsetPx.roundToInt())
         }
+    }
+
+
+    val thresholdPx = playheadOffsetPx.roundToInt()
+    LaunchedEffect(thresholdPx) {
+        var wasInCoverZone: Boolean? = null
+        androidx.compose.runtime.snapshotFlow { scrollState.value < thresholdPx }
+            .collect @androidx.annotation.RequiresPermission(android.Manifest.permission.VIBRATE) { isCurrentlyInCoverZone ->
+                // If the state changed (and it's not the initial screen load), trigger the vibration
+                if (wasInCoverZone != null && wasInCoverZone != isCurrentlyInCoverZone) {
+                    context.vibrate()
+                }
+                // Update the tracker
+                wasInCoverZone = isCurrentlyInCoverZone
+            }
     }
 
     Column(
@@ -663,19 +684,23 @@ fun EditorTimeline(
                         Spacer(modifier = Modifier.width(paddingTrick))
 
                         // The Track System
-                        Column(modifier = Modifier
-                            .width(timelineWidthDp)
-                            .padding(top = 24.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .width(timelineWidthDp)
+                                .padding(top = 24.dp)
+                        ) {
 
                             // Video Track
-                            Box(modifier = Modifier
-                                .fillMaxWidth()
-                                .height(64.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(64.dp)
+                            ) {
                                 // Cover Box
                                 Box(
                                     modifier = Modifier
                                         .offset(x = (-60).dp)
-                                        .width(60.dp)
+                                        .width(coverWidthDp)
                                         .fillMaxHeight()
                                         .background(
                                             Color(0xFF222222),
@@ -686,7 +711,12 @@ fun EditorTimeline(
                                             Color.White.copy(alpha = 0.3f),
                                             RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
                                         )
-                                        .clip(RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)) // Clip the image corners
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = 8.dp,
+                                                bottomStart = 8.dp
+                                            )
+                                        ) // Clip the image corners
                                         .clickable { onAddCoverClick() }, // Trigger the picker
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -698,7 +728,12 @@ fun EditorTimeline(
                                             contentScale = ContentScale.Crop // Keep it looking proportional inside the box
                                         )
                                     } else {
-                                        Text("Cover", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            "Cover",
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
                                 }
 
@@ -838,9 +873,11 @@ fun EditorTimeline(
                             Spacer(modifier = Modifier.height(8.dp))
 
                             // Audio Track
-                            Box(modifier = Modifier
-                                .fillMaxWidth()
-                                .height(32.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(32.dp)
+                            ) {
                                 uiState.audioClips.forEach { audio ->
                                     val isAudioBeingDragged = draggedAudioId == audio.id
                                     val currentDragOffsetMs =
@@ -1176,9 +1213,11 @@ fun VideoClipItem(
                 }
             }
 
-            Box(modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.2f)))
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.2f))
+            )
 
             Row(
                 modifier = Modifier
@@ -1227,7 +1266,10 @@ fun VideoClipItem(
                     .fillMaxSize()
                     .border(2.dp, Color.White, RoundedCornerShape(4.dp))
             )
-
+            Log.e(
+                "ANAND",
+                "ANAND_isSelected: ${clip.id}, originalDurationMs: ${clip.originalDurationMs}, trimStart: ${tempTrimStartMs}, trimEnd: ${tempTrimEndMs}"
+            )
             // Left Trim Handle
             val leftWidth = if (isLeftHandlePressed) 40.dp else 16.dp
             Box(
@@ -1272,11 +1314,21 @@ fun VideoClipItem(
             ) {
                 if (!isLeftHandlePressed) {
                     Canvas(modifier = Modifier.size(6.dp, 10.dp)) {
-                        val path = Path().apply {
-                            moveTo(size.width, 0f)
-                            lineTo(0f, size.height / 2f)
-                            lineTo(size.width, size.height)
+                        val path = if (tempTrimStartMs == 0L) {
+                            Path().apply {
+                                moveTo(size.width / 2f, 0f)
+                                lineTo(size.width / 2f, size.height)
+                            }
+                        } else {
+                            Path().apply {
+                                moveTo(size.width, 0f)
+                                lineTo(0f, size.height / 2f)
+                                lineTo(size.width, size.height)
+                            }
                         }
+
+
+
                         drawPath(
                             path,
                             color = Color.Black,
@@ -1335,10 +1387,17 @@ fun VideoClipItem(
             ) {
                 if (!isRightHandlePressed) {
                     Canvas(modifier = Modifier.size(6.dp, 10.dp)) {
-                        val path = Path().apply {
-                            moveTo(0f, 0f)
-                            lineTo(size.width, size.height / 2f)
-                            lineTo(0f, size.height)
+                        val path = if (tempTrimEndMs == clip.originalDurationMs) {
+                            Path().apply {
+                                moveTo(size.width / 2f, 0f)
+                                lineTo(size.width / 2f, size.height)
+                            }
+                        } else {
+                            Path().apply {
+                                moveTo(0f, 0f)
+                                lineTo(size.width, size.height / 2f)
+                                lineTo(0f, size.height)
+                            }
                         }
                         drawPath(
                             path,
@@ -1376,9 +1435,11 @@ fun TimelineHeader(currentTime: String, currentPositionMs: Long, msPerDp: Float)
                 fontWeight = FontWeight.Medium
             )
         }
-        Canvas(modifier = Modifier
-            .fillMaxWidth()
-            .height(32.dp)) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(32.dp)
+        ) {
             val stepInMs = when {
                 msPerDp <= 2f -> 100L; msPerDp <= 5f -> 200L; msPerDp <= 10f -> 500L; msPerDp <= 20f -> 1000L; msPerDp <= 50f -> 2000L; else -> 5000L
             }
@@ -1423,15 +1484,16 @@ private fun formatTimelineLabel(seconds: Int): String {
 @Composable
 fun TransitionButton(type: TransitionType, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val isActive = type != TransitionType.NONE
-    Box(modifier = modifier
-        .layout { measurable, constraints ->
-            val placeable = measurable.measure(constraints); layout(
-            0,
-            placeable.height
-        ) { placeable.placeRelative(-placeable.width / 2, 0) }
-        }
-        .height(64.dp)
-        .zIndex(20f), contentAlignment = Alignment.Center) {
+    Box(
+        modifier = modifier
+            .layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints); layout(
+                0,
+                placeable.height
+            ) { placeable.placeRelative(-placeable.width / 2, 0) }
+            }
+            .height(64.dp)
+            .zIndex(20f), contentAlignment = Alignment.Center) {
         Box(
             modifier = Modifier
                 .size(width = 28.dp, height = 22.dp)
@@ -1615,10 +1677,11 @@ fun VideoPreviewSection(
                 activeTransition = null; overlayAlpha = 0f; playerAlpha = 1f; blurRadius = 0.dp
             }
         }
-        Box(modifier = Modifier
-            .fillMaxSize()
-            .graphicsLayer { alpha = playerAlpha }
-            .blur(blurRadius)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = playerAlpha }
+                .blur(blurRadius)) {
             AndroidView(factory = { context ->
                 LayoutInflater.from(context).inflate(R.layout.player_view_texture, null).apply {
                     this as PlayerView; player =
